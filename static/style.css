@@ -1,0 +1,155 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d29;
+  --surface2: #232735;
+  --accent: #4f7cff;
+  --accent2: #7c3aed;
+  --text: #e8eaf0;
+  --muted: #8b90a0;
+  --green: #4ade80;
+  --red: #f87171;
+  --yellow: #fbbf24;
+  --border: #2d3142;
+}
+html, body { height: 100%; }
+body {
+  font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+  background: var(--bg); color: var(--text); user-select: none;
+}
+
+/* ============ 登录页 ============ */
+.login-body {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 100vh;
+  background: radial-gradient(circle at 30% 20%, #1e2335, var(--bg));
+}
+.login-card {
+  background: var(--surface); padding: 44px 40px; border-radius: 20px;
+  width: 380px; box-shadow: 0 30px 80px rgba(0,0,0,.6);
+  border: 1px solid var(--border);
+}
+.logo { font-size: 52px; text-align: center; margin-bottom: 12px; }
+.login-card h1 { font-size: 26px; text-align: center; margin-bottom: 6px; }
+.subtitle { color: var(--muted); text-align: center; margin-bottom: 28px; font-size: 14px; }
+.form-group { margin-bottom: 18px; }
+.form-group label { display: block; margin-bottom: 7px; font-size: 13px; color: var(--muted); }
+.form-group input {
+  width: 100%; padding: 13px 14px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--bg);
+  color: var(--text); font-size: 15px; transition: border-color .2s, box-shadow .2s;
+}
+.form-group input:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(79,124,255,.15);
+}
+.btn-primary {
+  width: 100%; padding: 13px; border: none; border-radius: 10px;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  color: white; font-size: 16px; font-weight: 600; cursor: pointer;
+  transition: opacity .2s, transform .1s;
+}
+.btn-primary:hover { opacity: .92; }
+.btn-primary:active { transform: scale(.98); }
+.btn-primary:disabled { opacity: .6; cursor: wait; }
+.error { color: var(--red); font-size: 14px; min-height: 20px; margin-bottom: 8px; text-align: center; }
+.hint { color: var(--muted); font-size: 12px; text-align: center; margin-top: 18px; }
+
+/* ============ 桌面控制台 ============ */
+.desktop-body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+.toolbar {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 18px; background: var(--surface);
+  border-bottom: 1px solid var(--border); flex-shrink: 0; gap: 12px; flex-wrap: wrap;
+}
+.toolbar-left, .toolbar-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.title { font-weight: 700; font-size: 15px; }
+.status {
+  padding: 5px 12px; border-radius: 14px; font-size: 12px; font-weight: 600;
+}
+.status.connected { background: rgba(74,222,128,.15); color: var(--green); }
+.status.disconnected { background: rgba(248,113,113,.15); color: var(--red); }
+.status.waiting { background: rgba(251,191,36,.15); color: var(--yellow); }
+.badge { font-size: 12px; color: var(--muted); padding: 4px 8px; background: var(--surface2); border-radius: 6px; }
+.user { font-size: 13px; color: var(--muted); }
+.btn-small {
+  padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface2); color: var(--text); cursor: pointer;
+  text-decoration: none; font-size: 13px; transition: background .2s;
+}
+.btn-small:hover { background: var(--accent); border-color: var(--accent); }
+.btn-danger:hover { background: var(--red); border-color: var(--red); }
+.screen-container {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  background: #000; position: relative; overflow: hidden;
+}
+#screen {
+  max-width: 100%; max-height: 100%;
+  box-shadow: 0 0 30px rgba(0,0,0,.6); cursor: crosshair;
+  background: #111;
+}
+.overlay {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  font-size: 16px; color: var(--text); background: rgba(0,0,0,.75);
+  padding: 18px 32px; border-radius: 14px; text-align: center;
+  border: 1px solid var(--border); backdrop-filter: blur(4px);
+}
+.overlay.hidden { display: none; }
+
+/* 虚拟键盘 */
+.kbd-panel {
+  position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 10px; z-index: 100;
+  box-shadow: 0 8px 30px rgba(0,0,0,.5);
+}
+.kbd-row { display: flex; gap: 6px; margin-bottom: 6px; }
+.kbd-row:last-child { margin-bottom: 0; }
+.kbd-key {
+  padding: 8px 12px; background: var(--surface2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 7px; cursor: pointer;
+  font-size: 13px; min-width: 40px; transition: background .1s;
+}
+.kbd-key:hover { background: var(--accent); }
+.kbd-key:active { background: var(--accent2); }
+
+/* 文字粘贴输入 */
+.text-paste {
+  position: fixed; bottom: 12px; right: 12px; width: 280px;
+  padding: 8px 12px; background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; font-size: 13px;
+  z-index: 90;
+}
+.text-paste:focus { outline: none; border-color: var(--accent); }
+
+/* ============ 被控端配置页状态框 ============ */
+.status-box {
+  padding: 12px 14px; border-radius: 10px; font-size: 14px;
+  margin-bottom: 16px; border: 1px solid var(--border);
+  background: var(--bg);
+}
+.status-box.idle { color: var(--muted); }
+.status-box.connecting { color: var(--yellow); border-color: var(--yellow); background: rgba(251,191,36,.08); }
+.status-box.connected { color: var(--green); border-color: var(--green); background: rgba(74,222,128,.08); }
+.status-box.error { color: var(--red); border-color: var(--red); background: rgba(248,113,113,.08); }
+
+/* ============ 主机选择页卡片 ============ */
+.host-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px; padding: 20px; display: flex; flex-direction: column;
+  gap: 14px; transition: border-color .2s, transform .1s;
+}
+.host-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+.host-avatar {
+  width: 48px; height: 48px; border-radius: 12px; font-size: 24px;
+  font-weight: 700; display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  color: white;
+}
+.host-info { flex: 1; }
+.host-name { font-size: 17px; font-weight: 600; margin-bottom: 4px; }
+.host-meta { font-size: 12px; color: var(--muted); display: flex; gap: 12px; align-items: center; }
+.host-status { font-weight: 600; }
+.host-status.online { color: var(--green); }
+.host-status.offline { color: var(--red); }
+.host-btn { width: 100%; padding: 11px; font-size: 14px; }

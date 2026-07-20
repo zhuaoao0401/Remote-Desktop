@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>远程桌面 - 控制台</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="desktop-body">
+  <div class="toolbar">
+    <div class="toolbar-left">
+      <span class="title">🖥️ {{ hostname }}</span>
+      <span id="status" class="status disconnected">连接中...</span>
+      <span id="fps" class="badge">0 FPS</span>
+      <span id="resolution" class="badge"></span>
+      <span id="latency" class="badge"></span>
+      <span id="bandwidth" class="badge"></span>
+    </div>
+    <div class="toolbar-right">
+      <span class="user">👤 {{ username }}</span>
+      <a href="/hosts?token={{ token }}" class="btn-small">主机列表</a>
+      <button id="reconnectBtn" class="btn-small">重连</button>
+      <button id="fullscreenBtn" class="btn-small">全屏</button>
+      <button id="keyboardBtn" class="btn-small">键盘</button>
+      <a href="/logout?token={{ token }}" class="btn-small btn-danger">退出</a>
+    </div>
+  </div>
+  <div class="screen-container" id="screenContainer">
+    <canvas id="screen"></canvas>
+    <div id="overlay" class="overlay">正在连接桌面...</div>
+  </div>
+  <!-- 虚拟键盘面板 -->
+  <div id="kbdPanel" class="kbd-panel" style="display:none;">
+    <div class="kbd-row">
+      <button class="kbd-key" data-key="Escape">Esc</button>
+      <button class="kbd-key" data-key="F1">F1</button>
+      <button class="kbd-key" data-key="F2">F2</button>
+      <button class="kbd-key" data-key="F3">F3</button>
+      <button class="kbd-key" data-key="F4">F4</button>
+      <button class="kbd-key" data-key="F5">F5</button>
+      <button class="kbd-key" data-key="F11">F11</button>
+      <button class="kbd-key" data-key="F12">F12</button>
+    </div>
+    <div class="kbd-row">
+      <button class="kbd-key" data-key="Control">Ctrl</button>
+      <button class="kbd-key" data-key="Alt">Alt</button>
+      <button class="kbd-key" data-key="Shift">Shift</button>
+      <button class="kbd-key" data-key="Meta">Win</button>
+      <button class="kbd-key" data-key="Tab">Tab</button>
+      <button class="kbd-key" data-key="Backspace">⌫</button>
+      <button class="kbd-key" data-key="Delete">Del</button>
+      <button class="kbd-key" data-key="Enter">Enter</button>
+    </div>
+    <div class="kbd-row">
+      <button class="kbd-key" data-key="ArrowUp">↑</button>
+      <button class="kbd-key" data-key="ArrowDown">↓</button>
+      <button class="kbd-key" data-key="ArrowLeft">←</button>
+      <button class="kbd-key" data-key="ArrowRight">→</button>
+      <button class="kbd-key" data-key=" ">Space</button>
+      <button class="kbd-key" data-key="Home">Home</button>
+      <button class="kbd-key" data-key="End">End</button>
+      <button class="kbd-key" data-key="PrintScreen">PrtSc</button>
+    </div>
+  </div>
+  <input type="text" id="textPaste" class="text-paste"
+         placeholder="在此粘贴文字后回车，可发送到远程桌面">
+  <script>
+    const MODE = '{{ mode }}';
+    const TOKEN = '{{ token }}';
+    const DESKTOP_ID = '{{ desktop_id }}';
+  </script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

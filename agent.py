@@ -1,0 +1,345 @@
+"""桌面代理：在被控电脑上运行，连接到中继服务器，采集屏幕并执行输入。
+
+被控端启动后会开启一个本地 Web 配置页（默认 http://localhost:8799），
+可在页面上设置主机名、中继地址，并一键启动/停止连接。
+
+也支持命令行直接启动（跳过配置页）:
+    python agent.py --relay ws://1.2.3.4:9090 --hostname 我的电脑
+
+选项:
+    --relay URL        中继服务器地址, 例如 ws://1.2.3.4:9090
+    --token TOKEN      代理认证令牌 (默认使用 config.py 中的 AGENT_TOKEN)
+    --hostname NAME    主机名称 (显示在控制端的主机列表中)
+    --no-gui           跳过配置页，直接用命令行参数启动
+"""
+import asyncio
+import json
+import argparse
+import os
+import time
+import uuid
+
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+import websockets
+
+from core import DeltaScreenCapture, InputController, pack_delta_frame
+import config
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+class AgentState:
+    """Agent 运行状态管理。"""
+
+    def __init__(self):
+        self.hostname = ""
+        self.relay_url = ""
+        self.token = config.AGENT_TOKEN
+        self.desktop_id = ""        # 基于主机名生成，用于中继路由
+        self.status = "idle"        # idle / connecting / connected / error
+        self.message = "未启动"
+        self.agent_task = None      # asyncio.Task
+        self.last_connected = None
+        self._ws = None
+
+    def to_dict(self):
+        return {
+            "hostname": self.hostname,
+            "relay_url": self.relay_url,
+            "status": self.status,
+            "message": self.message,
+            "last_connected": self.last_connected,
+        }
+
+
+state = AgentState()
+
+
+# ===========================================================================
+# 本地配置 Web 服务
+# ===========================================================================
+
+app = FastAPI(title="远程桌面 - 被控端配置")
+templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+
+
+CONFIG_PAGE_HTML = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>被控端配置 - 远程桌面</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-body">
+<div class="login-card" style="width:460px;">
+  <div class="logo">🖥️</div>
+  <h1>被控端配置</h1>
+  <p class="subtitle">设置主机名并连接到中继服务器</p>
+  <form id="cfgForm">
+    <div class="form-group">
+      <label for="hostname">主机名称（控制端会看到此名称）</label>
+      <input type="text" id="hostname" required placeholder="例如：我的办公电脑"
+             value="" maxlength="32">
+    </div>
+    <div class="form-group">
+      <label for="relay">中继服务器地址</label>
+      <input type="text" id="relay" required placeholder="ws://1.2.3.4:9090"
+             value="">
+    </div>
+    <div class="form-group">
+      <label for="token">代理令牌</label>
+      <input type="text" id="token" placeholder="留空使用默认令牌"
+             value="">
+    </div>
+    <div id="status-box" class="status-box idle">状态：未启动</div>
+    <button type="submit" id="startBtn" class="btn-primary">启动连接</button>
+    <button type="button" id="stopBtn" class="btn-small"
+            style="width:100%;margin-top:10px;display:none;">停止连接</button>
+  </form>
+  <p class="hint">配置页地址：http://localhost:8799</p>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+let polling = null;
+
+function setStatus(s, msg) {
+  const box = $('status-box');
+  box.className = 'status-box ' + s;
+  box.textContent = '状态：' + msg;
+}
+
+async function refresh() {
+  try {
+    const r = await fetch('/api/state');
+    const d = await r.json();
+    $('hostname').value = d.hostname || $('hostname').value;
+    $('relay').value = d.relay_url || $('relay').value;
+    setStatus(d.status, d.message);
+    const running = d.status === 'connected' || d.status === 'connecting';
+    $('startBtn').style.display = running ? 'none' : 'block';
+    $('stopBtn').style.display = running ? 'block' : 'none';
+  } catch(e) {}
+}
+
+$('cfgForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const hostname = $('hostname').value.trim();
+  const relay = $('relay').value.trim();
+  const token = $('token').value.trim();
+  if (!hostname || !relay) return;
+  $('startBtn').disabled = true;
+  $('startBtn').textContent = '启动中...';
+  try {
+    const r = await fetch('/api/start', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({hostname, relay, token})
+    });
+    const d = await r.json();
+    if (!d.ok) { setStatus('error', d.error || '启动失败'); }
+  } catch(e) { setStatus('error', e.message); }
+  $('startBtn').disabled = false;
+  $('startBtn').textContent = '启动连接';
+  refresh();
+});
+
+$('stopBtn').addEventListener('click', async () => {
+  await fetch('/api/stop', {method:'POST'});
+  refresh();
+});
+
+refresh();
+polling = setInterval(refresh, 2000);
+</script>
+</body>
+</html>"""
+
+
+@app.get("/", response_class=HTMLResponse)
+async def cfg_page():
+    return HTMLResponse(CONFIG_PAGE_HTML)
+
+
+@app.get("/api/state")
+async def get_state():
+    return state.to_dict()
+
+
+@app.post("/api/start")
+async def api_start(request: Request):
+    body = await request.json()
+    hostname = (body.get("hostname") or "").strip()
+    relay = (body.get("relay") or "").strip()
+    token = (body.get("token") or "").strip()
+    if not hostname:
+        return JSONResponse({"ok": False, "error": "请输入主机名"}, status_code=400)
+    if not relay:
+        return JSONResponse({"ok": False, "error": "请输入中继地址"}, status_code=400)
+    if state.agent_task and not state.agent_task.done():
+        return JSONResponse({"ok": False, "error": "已在运行，请先停止"}, status_code=400)
+
+    state.hostname = hostname
+    state.relay_url = relay
+    if token:
+        state.token = token
+    # 用主机名生成 desktop_id（做 URL 安全编码）
+    state.desktop_id = hostname
+    state.status = "connecting"
+    state.message = "正在连接中继..."
+
+    state.agent_task = asyncio.create_task(run_agent_loop())
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/stop")
+async def api_stop():
+    if state.agent_task and not state.agent_task.done():
+        state.agent_task.cancel()
+        try:
+            await asyncio.wait_for(state.agent_task, timeout=3)
+        except Exception:
+            pass
+    state.agent_task = None
+    state.status = "idle"
+    state.message = "已停止"
+    state._ws = None
+    return JSONResponse({"ok": True})
+
+
+# ===========================================================================
+# Agent 连接逻辑
+# ===========================================================================
+
+async def run_agent_loop():
+    """Agent 主循环：连接中继并传输屏幕。被取消时自动清理。"""
+    try:
+        screen = DeltaScreenCapture(monitor=config.SCREEN_MONITOR,
+                                    quality=config.SCREEN_QUALITY,
+                                    scale=config.SCREEN_SCALE,
+                                    fps=config.SCREEN_FPS)
+        inp = InputController()
+
+        # desktop_id 做 URL 编码处理
+        import urllib.parse
+        did = urllib.parse.quote(state.desktop_id, safe='')
+        url = f"{state.relay_url}/ws/agent?token={state.token}&desktop_id={did}&hostname={urllib.parse.quote(state.hostname, safe='')}"
+
+        while True:
+            try:
+                state.status = "connecting"
+                state.message = "正在连接中继..."
+                async with websockets.connect(url, max_size=None,
+                                              ping_interval=20) as ws:
+                    state._ws = ws
+                    state.status = "connected"
+                    state.message = f"已连接，正在传输画面"
+                    state.last_connected = time.strftime("%Y-%m-%d %H:%M:%S")
+                    print(f"[已连接] 主机={state.hostname} 中继={state.relay_url}")
+
+                    # 发送 init
+                    w, h = screen.get_size()
+                    await ws.send(json.dumps({
+                        "type": "init", "width": w, "height": h,
+                        "fps": config.SCREEN_FPS, "encoding": "delta",
+                        "hostname": state.hostname,
+                    }))
+
+                    loop = asyncio.get_event_loop()
+
+                    async def capture_loop():
+                        while True:
+                            frame = await loop.run_in_executor(
+                                None, screen.capture_delta)
+                            if frame:
+                                try:
+                                    await ws.send(pack_delta_frame(frame))
+                                except Exception:
+                                    break
+                            await asyncio.sleep(0.005)
+
+                    async def command_loop():
+                        while True:
+                            try:
+                                msg = await ws.recv()
+                            except Exception:
+                                break
+                            if isinstance(msg, bytes):
+                                continue
+                            try:
+                                cmd = json.loads(msg)
+                                if cmd.get("type") == "init":
+                                    continue
+                                await loop.run_in_executor(None, inp.execute, cmd)
+                            except Exception as e:
+                                print(f"[命令错误] {e}")
+
+                    await asyncio.gather(capture_loop(), command_loop())
+            except asyncio.CancelledError:
+                raise
+            except (websockets.exceptions.ConnectionClosed,
+                    ConnectionRefusedError, OSError) as e:
+                state.status = "connecting"
+                state.message = f"连接断开，5秒后重连: {e}"
+                print(f"[连接断开] {e}  5秒后重连...")
+            except Exception as e:
+                state.status = "connecting"
+                state.message = f"异常，5秒后重连: {e}"
+                print(f"[异常] {e}  5秒后重连...")
+            await asyncio.sleep(5)
+    except asyncio.CancelledError:
+        state.status = "idle"
+        state.message = "已停止"
+        state._ws = None
+        print("[已停止]")
+
+
+# ===========================================================================
+# 启动
+# ===========================================================================
+
+def main():
+    parser = argparse.ArgumentParser(description="远程桌面 - 桌面代理(被控端)")
+    parser.add_argument("--relay", default="",
+                        help="中继服务器地址 (不填则用配置页设置)")
+    parser.add_argument("--token", default=config.AGENT_TOKEN,
+                        help="代理认证令牌")
+    parser.add_argument("--hostname", default="",
+                        help="主机名称 (不填则用配置页设置)")
+    parser.add_argument("--port", type=int, default=8799,
+                        help="本地配置页端口 (默认 8799)")
+    parser.add_argument("--no-gui", action="store_true",
+                        help="跳过配置页，直接用命令行参数启动")
+    args = parser.parse_args()
+
+    print("=" * 56)
+    print("  远程桌面控制 - 被控端")
+    print("=" * 56)
+    print(f"  本地配置页: http://localhost:{args.port}")
+    print(f"  帧率/质量 : {config.SCREEN_FPS}fps / JPEG {config.SCREEN_QUALITY}")
+    print("=" * 56)
+
+    # 如果命令行提供了完整参数且 --no-gui，直接启动 agent
+    if args.no_gui and args.relay and args.hostname:
+        state.hostname = args.hostname
+        state.relay_url = args.relay
+        state.token = args.token
+        state.desktop_id = args.hostname
+        state.agent_task = asyncio.create_task(run_agent_loop())
+
+    # 启动配置页 Web 服务
+    config_app = app
+    # 挂载静态文件（如果目录存在）
+    static_dir = os.path.join(BASE_DIR, "static")
+    if os.path.isdir(static_dir):
+        config_app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+    uvicorn.run(config_app, host="127.0.0.1", port=args.port, log_level="warning")
+
+
+if __name__ == "__main__":
+    main()

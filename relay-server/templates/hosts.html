@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>选择主机 - 远程桌面</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-body" style="display:block;">
+  <div style="max-width:720px;margin:0 auto;padding:40px 20px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
+      <div>
+        <h1 style="font-size:24px;margin-bottom:4px;">🖥️ 选择要控制的主机</h1>
+        <p style="color:var(--muted);font-size:14px;">登录用户：{{ username }} · 可同时控制最多 4 台主机（各开新窗口）</p>
+      </div>
+      <a href="/logout?token={{ token }}" class="btn-small btn-danger">退出登录</a>
+    </div>
+
+    <div id="hostList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;">
+      <!-- 主机卡片由 JS 动态填充 -->
+    </div>
+
+    <div id="emptyHint" class="overlay" style="position:static;transform:none;display:block;margin-top:40px;">
+      <div style="font-size:48px;margin-bottom:12px;">📡</div>
+      <div>当前没有主机在线</div>
+      <div style="font-size:13px;color:var(--muted);margin-top:8px;">
+        请在被控电脑上运行 agent 并连接到此中继服务器
+      </div>
+    </div>
+
+    <div style="margin-top:32px;padding:16px;background:var(--surface);border-radius:12px;border:1px solid var(--border);font-size:13px;color:var(--muted);line-height:1.8;">
+      <div style="color:var(--text);font-weight:600;margin-bottom:8px;">💡 使用说明</div>
+      • 点击主机卡片下方的「控制此主机」进入远程桌面<br>
+      • 每台主机会在新窗口打开，可同时控制多台（最多 4 台）<br>
+      • 已打开的窗口会自动聚焦，避免重复<br>
+      • 列表每 3 秒自动刷新，主机上下线会实时更新
+    </div>
+  </div>
+
+  <script>
+    const TOKEN = '{{ token }}';
+    let openWindows = {};  // desktop_id -> window reference
+
+    async function loadHosts() {
+      try {
+        const r = await fetch('/api/hosts');
+        const d = await r.json();
+        renderHosts(d.hosts || []);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function renderHosts(hosts) {
+      const list = document.getElementById('hostList');
+      const empty = document.getElementById('emptyHint');
+      if (hosts.length === 0) {
+        list.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+      }
+      empty.style.display = 'none';
+
+      list.innerHTML = hosts.map(h => {
+        const initial = (h.hostname || '?').charAt(0).toUpperCase();
+        return `
+        <div class="host-card" data-id="${escapeHtml(h.desktop_id)}">
+          <div class="host-avatar">${escapeHtml(initial)}</div>
+          <div class="host-info">
+            <div class="host-name">${escapeHtml(h.hostname)}</div>
+            <div class="host-meta">
+              <span class="host-status online">● 在线</span>
+              <span>上线于 ${escapeHtml(h.since || '-')}</span>
+            </div>
+          </div>
+          <button class="btn-primary host-btn" onclick="openDesktop('${escapeAttr(h.desktop_id)}','${escapeAttr(h.hostname)}')">
+            控制此主机
+          </button>
+        </div>`;
+      }).join('');
+    }
+
+    function openDesktop(desktopId, hostname) {
+      // 最多 4 个窗口
+      const openCount = Object.values(openWindows).filter(w => w && !w.closed).length;
+      if (openCount >= 4 && !(desktopId in openWindows && !openWindows[desktopId].closed)) {
+        alert('最多同时控制 4 台主机，请先关闭部分窗口');
+        return;
+      }
+      // 如果该主机的窗口已打开，聚焦它
+      if (openWindows[desktopId] && !openWindows[desktopId].closed) {
+        openWindows[desktopId].focus();
+        return;
+      }
+      // 打开新窗口
+      const url = `/desktop?token=${TOKEN}&desktop_id=${encodeURIComponent(desktopId)}`;
+      const w = window.open(url, `desktop_${desktopId}`, 'width=1024,height=720');
+      openWindows[desktopId] = w;
+      // 设置窗口标题
+      if (w) {
+        w.addEventListener('load', () => {
+          try { w.document.title = `远程桌面 - ${hostname}`; } catch(e) {}
+        });
+      }
+    }
+
+    function escapeHtml(s) {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+    function escapeAttr(s) {
+      return String(s).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    }
+
+    // 定时刷新
+    loadHosts();
+    setInterval(loadHosts, 3000);
+  </script>
+</body>
+</html>

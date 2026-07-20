@@ -1,0 +1,7 @@
+# 远程桌面 - 中继服务器依赖
+# 公网服务器无需安装图形库 (mss/pyautogui/Pillow)
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+websockets>=11.0
+python-multipart>=0.0.6
+jinja2>=3.0.0
