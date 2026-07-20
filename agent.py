@@ -42,7 +42,8 @@ class AgentState:
         self.desktop_id = ""        # 基于主机名生成，用于中继路由
         self.status = "idle"        # idle / connecting / connected / error
         self.message = "未启动"
-        self.agent_task = None      # asyncio.Task
+        self._thread = None         # threading.Thread
+        self._stop_flag = False     # 停止标志
         self.last_connected = None
         self._ws = None
 
@@ -180,7 +181,7 @@ async def api_start(request: Request):
         return JSONResponse({"ok": False, "error": "请输入主机名"}, status_code=400)
     if not relay:
         return JSONResponse({"ok": False, "error": "请输入中继地址"}, status_code=400)
-    if state.agent_task and not state.agent_task.done():
+    if state._thread is not None:
         return JSONResponse({"ok": False, "error": "已在运行，请先停止"}, status_code=400)
 
     state.hostname = hostname
@@ -192,19 +193,27 @@ async def api_start(request: Request):
     state.status = "connecting"
     state.message = "正在连接中继..."
 
-    state.agent_task = asyncio.create_task(run_agent_loop())
+    # 在独立线程中启动 agent，避免阻塞 uvicorn 事件循环
+    import threading
+    state._thread = threading.Thread(target=run_agent_thread, daemon=True)
+    state._thread.start()
     return JSONResponse({"ok": True})
 
 
 @app.post("/api/stop")
 async def api_stop():
-    if state.agent_task and not state.agent_task.done():
-        state.agent_task.cancel()
+    state._stop_flag = True
+    # 关闭 WebSocket 连接
+    if state._ws:
         try:
-            await asyncio.wait_for(state.agent_task, timeout=3)
+            await state._ws.close()
         except Exception:
             pass
-    state.agent_task = None
+    # 等待线程结束
+    if state._thread and state._thread.is_alive():
+        state._thread.join(timeout=3)
+    state._thread = None
+    state._stop_flag = False
     state.status = "idle"
     state.message = "已停止"
     state._ws = None
@@ -215,8 +224,25 @@ async def api_stop():
 # Agent 连接逻辑
 # ===========================================================================
 
-async def run_agent_loop():
-    """Agent 主循环：连接中继并传输屏幕。被取消时自动清理。"""
+def run_agent_thread():
+    """Agent 主循环（独立线程）：连接中继并传输屏幕。
+
+    在独立线程中运行，使用自己的 asyncio 事件循环，
+    避免阻塞 uvicorn 的 Web 服务。
+    """
+    # 在线程内创建独立的事件循环
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_agent_async_main())
+    except Exception as e:
+        print(f"[Agent线程异常] {e}")
+    finally:
+        loop.close()
+
+
+async def _agent_async_main():
+    """Agent 异步主逻辑。"""
     try:
         screen = DeltaScreenCapture(monitor=config.SCREEN_MONITOR,
                                     quality=config.SCREEN_QUALITY,
@@ -224,24 +250,25 @@ async def run_agent_loop():
                                     fps=config.SCREEN_FPS)
         inp = InputController()
 
-        # desktop_id 做 URL 编码处理
         import urllib.parse
         did = urllib.parse.quote(state.desktop_id, safe='')
         url = f"{state.relay_url}/ws/agent?token={state.token}&desktop_id={did}&hostname={urllib.parse.quote(state.hostname, safe='')}"
 
         while True:
+            if state._stop_flag:
+                break
             try:
                 state.status = "connecting"
                 state.message = "正在连接中继..."
                 async with websockets.connect(url, max_size=None,
-                                              ping_interval=20) as ws:
+                                              ping_interval=20,
+                                              open_timeout=15) as ws:
                     state._ws = ws
                     state.status = "connected"
-                    state.message = f"已连接，正在传输画面"
+                    state.message = "已连接，正在传输画面"
                     state.last_connected = time.strftime("%Y-%m-%d %H:%M:%S")
                     print(f"[已连接] 主机={state.hostname} 中继={state.relay_url}")
 
-                    # 发送 init
                     w, h = screen.get_size()
                     await ws.send(json.dumps({
                         "type": "init", "width": w, "height": h,
@@ -290,8 +317,12 @@ async def run_agent_loop():
                 state.status = "connecting"
                 state.message = f"异常，5秒后重连: {e}"
                 print(f"[异常] {e}  5秒后重连...")
-            await asyncio.sleep(5)
-    except asyncio.CancelledError:
+            # 等待重连，但每秒检查停止标志
+            for _ in range(5):
+                if state._stop_flag:
+                    break
+                await asyncio.sleep(1)
+    finally:
         state.status = "idle"
         state.message = "已停止"
         state._ws = None
@@ -323,13 +354,18 @@ def main():
     print(f"  帧率/质量 : {config.SCREEN_FPS}fps / JPEG {config.SCREEN_QUALITY}")
     print("=" * 56)
 
-    # 如果命令行提供了完整参数且 --no-gui，直接启动 agent
+    # 如果命令行提供了完整参数且 --no-gui，在 startup 事件中启动 agent 线程
     if args.no_gui and args.relay and args.hostname:
         state.hostname = args.hostname
         state.relay_url = args.relay
         state.token = args.token
         state.desktop_id = args.hostname
-        state.agent_task = asyncio.create_task(run_agent_loop())
+
+        @app.on_event("startup")
+        async def _auto_start():
+            import threading
+            state._thread = threading.Thread(target=run_agent_thread, daemon=True)
+            state._thread.start()
 
     # 启动配置页 Web 服务
     config_app = app
