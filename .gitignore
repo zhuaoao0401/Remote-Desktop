@@ -24,6 +24,10 @@ relay.log
 relay.pid
 *.log
 
+# 诊断/测试脚本
+diag*.py
+test*.py
+
 # 操作系统
 .DS_Store
 Thumbs.db
