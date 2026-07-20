@@ -26,6 +26,15 @@ CONFIG = {
     "TEST_ALT_PORTS": True,
     # 备选端口列表
     "ALT_PORTS": [443, 8080, 8443, 80],
+
+    # ---- HTTP 代理设置 ----
+    # 设为 None 则使用系统环境变量中的代理；
+    # 设为 "" 空字符串则禁用代理（直连）；
+    # 设为 "http://127.0.0.1:7890" 则使用指定代理。
+    "HTTP_PROXY": None,
+    "HTTPS_PROXY": None,
+    # 代理不走的目标地址（分号分隔），设为 "*" 表示全部绕过
+    "NO_PROXY": None,
 }
 # ============================================================
 
@@ -49,8 +58,17 @@ print("=" * 56)
 print(f"  目标服务器: {CONFIG['SERVER_HOST']}:{CONFIG['SERVER_PORT']}")
 print(f"  令牌: {CONFIG['AGENT_TOKEN']}")
 
-# 1. 检查代理设置
+# 1. 检查代理设置（应用 CONFIG 中的配置）
 print("\n[1] 代理设置检查")
+
+# 应用 CONFIG 中的代理配置
+if CONFIG["HTTP_PROXY"] is not None:
+    os.environ['HTTP_PROXY'] = CONFIG["HTTP_PROXY"]
+if CONFIG["HTTPS_PROXY"] is not None:
+    os.environ['HTTPS_PROXY'] = CONFIG["HTTPS_PROXY"]
+if CONFIG["NO_PROXY"] is not None:
+    os.environ['NO_PROXY'] = CONFIG["NO_PROXY"]
+
 http_proxy = os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy')
 https_proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy')
 no_proxy = os.environ.get('NO_PROXY') or os.environ.get('no_proxy')
@@ -59,6 +77,8 @@ print(f"  HTTPS_PROXY: {https_proxy or '(无)'}")
 print(f"  NO_PROXY:    {no_proxy or '(无)'}")
 if http_proxy or https_proxy:
     print("  ⚠️ 检测到代理！这可能是 403 的原因——代理可能篡改了 WebSocket 请求")
+else:
+    print("  ℹ️ 无代理，直连模式")
 
 # 2. 测试 HTTP 连通性
 print("\n[2] HTTP 连通性测试")
