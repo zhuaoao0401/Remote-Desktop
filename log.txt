@@ -1,0 +1,41 @@
+D:\pywork\Remote-Desktop-main\.venv\Scripts\python.exe D:\pywork\Remote-Desktop-main\diag_company.py 
+========================================================
+公司电脑 WebSocket 连接诊断
+========================================================
+
+[1] 代理设置检查
+  HTTP_PROXY:  (无)
+  HTTPS_PROXY: (无)
+  NO_PROXY:    (无)
+
+[2] HTTP 连通性测试
+  ✅ HTTP 正常: <!doctype html><html xmlns="http://www.w3.org/1999/xhtml"><head><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="keywords" content="SWG,Proxy,NetentSec"><title>HIS Proxy Notification</title><link rel="icon" href="https://console.his.huawei.com/hicweb/images/his.ico"><link rel="stylesheet" type="text/css" href="https://r.hw3static.com/s/pro_erp_slice001/proxyAccess/lst/css/common_block.css"></head><body><input id="sessionid" style="display:none" value="1b50177452847a68fb1aeef5918df34"> <input id="pid" style="display:none" value="3078"> <input id="uid" style="display:none" value="0"><div id="header"><div class="headerContainer"><div class="logo_box"><a href="https://his.huawei.com/portal/#/"><img id="logo" src="https://r.hw3static.com/s/pro_erp_slice001/proxyAccess/lst/img/his_logo.png"> </a><span class="split">|</span> <img src="https://r.hw3static.com/s/pro_erp_slice001/proxyAccess/lst/img/xdefend_logo.png"></div><div class="support_box"><a href="http://his.huawei.com/portal/#/sec/view?page_id=42170ee287034805a539c9a3bdca5274" id="support">支持与帮助</a> <span onclick="changeLanguage()" id="language">EN</span><ul class="support_list"><li><a id="help" href="https://12345.his.huawei.com/wecare/onlineservice/aigc/#/chat?locale=zh-CN&hotlineId=M020240&sourceURL=https%3A%2F%2Fhis.huawei.com%2Fportal%2F%23%2Fsec%2Fintro%3Fservicealias%3Dproxy%26service_code%3Dhrn%3Ahis%3Aservicemarket%3A%3Aservice%3Aproxy">客服</a></li><li><a id="feedback" href="http://12345.huawei.com/unidesk/portal/#/requestDetail?pic=his">问题反馈</a></li><li><a id="file" href="http://his.huawei.com/doc/">文档与资源</a></li><li><a id="user" href="http://his.huawei.com/portal/#/sec/intro?servicealias=mwg_proxy_system&service_code=hrn:his:servicemarket::service:mwg_proxy_system">用户评价</a></li><li><a id="community" href="http://3ms.huawei.com/hi/group/2692001">社区</a></li></ul></div></div></div><div id="container"><div class="leftImg"><img src="https://r.hw3static.com/s/pro_erp_slice001/proxyAccess/lst/img/warning_block.jpg"></div><div class="textBox"><div id="preReason">您访问的网站可能存在安全风险</div><a class="button" id="continueBtn">接受风险并访问</a> <a class="button" id="tryButton" onclick="goRiskTips()">申请取消风险提醒</a><div class="text"><span id="ckal">参考案例：</span> <a id="example" href="http://12345.huawei.com/unidesk/portal/#/case_details?caseId=KT00018687">取消网站的风险提醒</a></div><br><div class="text"><span id="question">如有疑问，请联系</span> <a id="it" href="https://12345.his.huawei.com/wecare/onlineservice/aigc/#/chat?locale=zh-CN&hotlineId=M020240&sourceURL=https%3A%2F%2Fhis.huawei.com%2Fportal%2F%23%2Fsec%2Fintro%3Fservicealias%3Dproxy%26service_code%3Dhrn%3Ahis%3Aservicemarket%3A%3Aservice%3Aproxy">12345客服联盟</a></div></div></div><script id="ihelp_component_script" async src="//12345.his.huawei.com/wecare/onlineservice/cs.js?hotlineId=M020240&locale=zh-CN"></script><script src="https://r.hw3static.com/s/pro_erp_slice001/proxyAccess/lst/js/warning_page.js"></script><script src="https://r.hw3static.com/s/pro_erp_slice001/proxyAccess/lst/js/uem.js"></script><script>window.addEventListener("load",function(){var e=document.createElement("script");e.async=!0,e.src="https://r.hw3static.com/s/pro_erp_slice001/proxyAccess/lst/js/warning_hotfix19.js",document.body.appendChild(e)}),window.hwa("trackPageView","P20B862F43D0D18")</script></body></html>
+
+[3] WebSocket 连接测试
+  ❌ 默认 URL: HTTP 403
+     响应体: <!doctype html><html xmlns="http://www.w3.org/1999/xhtml"><head><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="keyw
+     Server头: netentsec_page_push
+  ❌ 简化 URL（无 hostname）: HTTP 403
+     响应体: <!doctype html><html xmlns="http://www.w3.org/1999/xhtml"><head><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="keyw
+     Server头: netentsec_page_push
+  ❌ IP 直连 80 端口模拟: HTTP 403
+     响应体: <!doctype html><html xmlns="http://www.w3.org/1999/xhtml"><head><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta http-equiv="Content-Type" content="text/html; charset=utf-8"><meta name="keyw
+     Server头: netentsec_page_push
+
+[4] 手动 HTTP 升级请求测试
+  ❌ 错误: timed out
+
+========================================================
+诊断结论
+========================================================
+
+如果 HTTP 正常但 WebSocket 403，可能原因：
+  1. 公司防火墙深度检查，修改了 WebSocket 请求头
+  2. token 参数被 URL 编码问题截断
+
+尝试方案：
+  set NO_PROXY=43.163.239.11
+  python agent.py
+
+
+Process finished with exit code 0
