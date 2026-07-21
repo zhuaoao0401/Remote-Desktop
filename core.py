@@ -363,6 +363,21 @@ KEY_MAP = {
     'ContextMenu': 'menu',
 }
 
+# Mac → Windows 快捷键映射
+# Mac 的 Cmd 键在 Windows 上对应 Win 键，但用户通常期望 Cmd 做 Ctrl 的事
+MAC_KEY_REMAP = {
+    'Meta': 'ctrl',      # Mac Cmd → Windows Ctrl（复制粘贴等）
+    'Control': 'win',    # Mac Ctrl → Windows Win
+}
+
+# Mac 快捷键组合映射（cmd+key → ctrl+key）
+MAC_SHORTCUT_REMAP = {
+    'c': 'ctrl+c', 'v': 'ctrl+v', 'x': 'ctrl+x', 'a': 'ctrl+a',
+    'z': 'ctrl+z', 'y': 'ctrl+y', 's': 'ctrl+s', 'p': 'ctrl+p',
+    'f': 'ctrl+f', 'w': 'ctrl+w', 't': 'ctrl+t', 'n': 'ctrl+n',
+    'l': 'ctrl+l', 'r': 'ctrl+r', 'q': 'ctrl+q',
+}
+
 
 def browser_key_to_pyautogui(key):
     """将浏览器 KeyboardEvent.key 转换为 pyautogui 按键名。"""
@@ -414,7 +429,8 @@ class InputController:
                                  int(command.get('x', 0)),
                                  int(command.get('y', 0)))
             elif t == 'key_down':
-                k = browser_key_to_pyautogui(command.get('key'))
+                raw_key = command.get('key')
+                k = browser_key_to_pyautogui(raw_key)
                 if k:
                     pyautogui.keyDown(k)
             elif t == 'key_up':
@@ -444,13 +460,17 @@ class InputController:
 
 
 class AudioCapture:
-    """采集系统音频（WASAPI loopback），返回 PCM Float32 数据。
+    """采集系统音频（WASAPI loopback），μ-law 压缩后返回。
 
-    采样率降为 22050Hz 单声道，每帧约 0.1 秒。
+    采样率降为 22050Hz 单声道，μ-law 编码（8-bit/样本），每帧约 0.1 秒。
+    带宽：~22 KB/s（压缩前 88 KB/s）。
     """
 
     TARGET_RATE = 22050  # 目标采样率（降采样省带宽）
     FRAME_MS = 100       # 每帧时长（毫秒）
+
+    # μ-law 编码查找表（256 项，0~255）
+    _MULAW_TABLE = None
 
     def __init__(self):
         if not HAS_SOUNDCARD:
@@ -458,18 +478,35 @@ class AudioCapture:
         self.mic = None
         self.original_rate = 44100
         self._running = False
+        self._init_mulaw_table()
+
+    @classmethod
+    def _init_mulaw_table(cls):
+        """初始化 μ-law 编码查找表。"""
+        if cls._MULAW_TABLE is not None:
+            return
+        import numpy as np
+        table = np.zeros(65536, dtype=np.uint8)
+        for i in range(-32768, 32768):
+            # μ-law 编码算法
+            sample = max(-32768, min(32767, i))
+            sign = 0x80 if sample < 0 else 0x00
+            sample = abs(sample)
+            if sample > 32635:
+                sample = 32635
+            sample = int(32768 * np.log1p(sample / 32768.0) / np.log(256))
+            sample = min(127, sample)
+            table[i + 32768] = ~(sign | sample) & 0xFF
+        cls._MULAW_TABLE = table
 
     def start(self):
         """打开音频设备，开始采集。"""
-        # 找到默认播放设备的 loopback
         try:
             speaker = sc.default_speaker()
-            # 通过 speaker 名称匹配对应的 loopback microphone
             all_mics = sc.all_microphones(loopback=True)
             if all_mics:
                 self.mic = all_mics[0]
             else:
-                # 回退：尝试所有麦克风
                 all_mics = sc.all_microphones()
                 if all_mics:
                     self.mic = all_mics[0]
@@ -492,28 +529,29 @@ class AudioCapture:
             self.mic = None
 
     def capture_chunk(self):
-        """采集一个音频块，返回 bytes（Float32 LE PCM，mono，22050Hz）。
+        """采集一个音频块，μ-law 压缩后返回 bytes（mono，22050Hz，8-bit）。
 
         返回 None 表示未运行或出错。
         """
         if not self._running or not self.mic:
             return None
         try:
-            # 每块采样数（原始采样率）
             num_samples = int(self.original_rate * self.FRAME_MS / 1000)
             data = self.mic.record(numframes=num_samples)
-            # data: shape (num_samples, channels) float32
             if data.ndim > 1:
-                # 多声道转单声道：取平均
                 data = data.mean(axis=1)
-            # 降采样：简单间隔采样
+            # 降采样
             if self.original_rate != self.TARGET_RATE:
                 ratio = self.original_rate / self.TARGET_RATE
                 indices = np.arange(0, len(data), ratio).astype(int)
                 data = data[indices]
-            # 确保 float32
-            data = data.astype(np.float32)
-            return data.tobytes()
+            # float32 → int16
+            data = np.clip(data, -1.0, 1.0)
+            data = (data * 32767).astype(np.int16)
+            # μ-law 编码（查表）
+            indices = data.astype(np.int32) + 32768
+            encoded = AudioCapture._MULAW_TABLE[indices]
+            return encoded.tobytes()
         except Exception as e:
             print(f"[音频采集错误] {e}")
             return None
@@ -525,11 +563,15 @@ class AudioCapture:
 
 
 class SessionManager:
-    """内存中的会话令牌存储，带过期清理。"""
+    """内存中的会话令牌存储，带过期清理和登录失败限制。"""
+
+    MAX_FAILED_ATTEMPTS = 5       # 最大失败次数
+    LOCKOUT_DURATION = 300        # 锁定时长（秒）
 
     def __init__(self, expiry=3600 * 8):
         self.expiry = expiry
         self.sessions = OrderedDict()  # token -> {username, expires}
+        self._failed_attempts = {}     # ip -> {count, lock_until}
 
     def create(self, username):
         token = secrets.token_urlsafe(32)
@@ -560,6 +602,35 @@ class SessionManager:
         now = time.time()
         for t in [t for t, s in self.sessions.items() if now > s['expires']]:
             self.sessions.pop(t, None)
+
+    def check_rate_limit(self, client_ip):
+        """检查是否被锁定。返回 True 表示可以尝试。"""
+        info = self._failed_attempts.get(client_ip)
+        if not info:
+            return True
+        if info.get('lock_until') and time.time() < info['lock_until']:
+            return False
+        return True
+
+    def record_failed_attempt(self, client_ip):
+        """记录一次失败尝试，达到上限则锁定。"""
+        info = self._failed_attempts.get(client_ip, {'count': 0})
+        info['count'] += 1
+        if info['count'] >= self.MAX_FAILED_ATTEMPTS:
+            info['lock_until'] = time.time() + self.LOCKOUT_DURATION
+        self._failed_attempts[client_ip] = info
+
+    def record_success(self, client_ip):
+        """登录成功，清除失败记录。"""
+        self._failed_attempts.pop(client_ip, None)
+
+    def get_remaining_lock(self, client_ip):
+        """获取剩余锁定时间（秒）。0 表示未锁定。"""
+        info = self._failed_attempts.get(client_ip)
+        if not info or not info.get('lock_until'):
+            return 0
+        remaining = info['lock_until'] - time.time()
+        return max(0, int(remaining))
 
 
 def authenticate(username, password):

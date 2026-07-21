@@ -16,6 +16,7 @@ import asyncio
 import json
 import argparse
 import os
+import sys
 import time
 import uuid
 
@@ -35,17 +36,49 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 class AgentState:
     """Agent 运行状态管理。"""
 
+    CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".remote_desktop_config.json")
+
     def __init__(self):
         self.hostname = ""
         self.relay_url = ""
         self.token = config.AGENT_TOKEN
-        self.desktop_id = ""        # 基于主机名生成，用于中继路由
-        self.status = "idle"        # idle / connecting / connected / error
+        self.desktop_id = ""
+        self.status = "idle"
         self.message = "未启动"
-        self._thread = None         # threading.Thread
-        self._stop_flag = False     # 停止标志
+        self._thread = None
+        self._stop_flag = False
         self.last_connected = None
         self._ws = None
+        # 启动时加载持久化配置
+        self.load_config()
+
+    def load_config(self):
+        """从本地文件加载配置。"""
+        try:
+            import json
+            if os.path.exists(self.CONFIG_FILE):
+                with open(self.CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    cfg = json.load(f)
+                self.hostname = cfg.get('hostname', '')
+                self.relay_url = cfg.get('relay_url', '')
+                if cfg.get('token'):
+                    self.token = cfg['token']
+        except Exception:
+            pass
+
+    def save_config(self):
+        """保存配置到本地文件。"""
+        try:
+            import json
+            cfg = {
+                'hostname': self.hostname,
+                'relay_url': self.relay_url,
+                'token': self.token if self.token != config.AGENT_TOKEN else '',
+            }
+            with open(self.CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     def to_dict(self):
         return {
@@ -132,6 +165,10 @@ CONFIG_PAGE_HTML = """<!DOCTYPE html>
       <button type="submit" id="startBtn" class="btn-primary">启动连接</button>
       <button type="button" id="stopBtn" class="btn-small"
               style="width:100%;margin-top:10px;display:none;">停止连接</button>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;color:var(--muted);">
+        <input type="checkbox" id="autostartChk" onchange="toggleAutostart()">
+        开机自动启动（Windows 注册表）
+      </label>
     </form>
   </div>
 
@@ -235,6 +272,26 @@ $('stopBtn').addEventListener('click', async () => {
 
 refresh();
 polling = setInterval(refresh, 2000);
+
+// ---- 开机启动 ----
+async function checkAutostart() {
+  try {
+    const r = await fetch('/api/autostart');
+    const d = await r.json();
+    $('autostartChk').checked = d.enabled;
+  } catch(e) {}
+}
+async function toggleAutostart() {
+  const enable = $('autostartChk').checked;
+  try {
+    await fetch('/api/autostart', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({enable})
+    });
+  } catch(e) {}
+}
+checkAutostart();
 
 // ---- 远程控制 ----
 async function loadHosts() {
@@ -377,6 +434,8 @@ async def api_start(request: Request):
     state.desktop_id = hostname
     state.status = "connecting"
     state.message = "正在连接中继..."
+    # 保存配置到本地文件
+    state.save_config()
 
     # 在独立线程中启动 agent，避免阻塞 uvicorn 事件循环
     import threading
@@ -403,6 +462,88 @@ async def api_stop():
     state.message = "已停止"
     state._ws = None
     return JSONResponse({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# 自动开机启动管理
+# ---------------------------------------------------------------------------
+
+if sys.platform == 'win32':
+    import winreg
+
+def get_startup_command():
+    """获取开机启动的命令行。"""
+    if sys.platform == 'win32':
+        exe = sys.executable
+        script = os.path.abspath(__file__)
+        if exe.endswith('python.exe'):
+            return f'"{exe}" "{script}" --no-gui'
+        else:
+            # 打包成 exe 的情况
+            return f'"{exe}" --no-gui'
+    return None
+
+def is_autostart_enabled():
+    """检查是否已设置开机启动。"""
+    if sys.platform != 'win32':
+        return False
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                             0, winreg.KEY_READ)
+        winreg.QueryValueEx(key, "RemoteDesktop")
+        winreg.CloseKey(key)
+        return True
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
+
+def enable_autostart():
+    """设置开机启动。"""
+    if sys.platform != 'win32':
+        return False, "仅支持 Windows"
+    try:
+        cmd = get_startup_command()
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                             0, winreg.KEY_SET_VALUE)
+        winreg.SetValueEx(key, "RemoteDesktop", 0, winreg.REG_SZ, cmd)
+        winreg.CloseKey(key)
+        return True, "已设置开机启动"
+    except Exception as e:
+        return False, str(e)
+
+def disable_autostart():
+    """取消开机启动。"""
+    if sys.platform != 'win32':
+        return False, "仅支持 Windows"
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                             0, winreg.KEY_SET_VALUE)
+        winreg.DeleteValue(key, "RemoteDesktop")
+        winreg.CloseKey(key)
+        return True, "已取消开机启动"
+    except FileNotFoundError:
+        return True, "未设置开机启动"
+    except Exception as e:
+        return False, str(e)
+
+
+@app.get("/api/autostart")
+async def get_autostart():
+    return JSONResponse({"enabled": is_autostart_enabled()})
+
+@app.post("/api/autostart")
+async def toggle_autostart(request: Request):
+    body = await request.json()
+    enable = body.get("enable", False)
+    if enable:
+        ok, msg = enable_autostart()
+    else:
+        ok, msg = disable_autostart()
+    return JSONResponse({"ok": ok, "message": msg, "enabled": is_autostart_enabled()})
 
 
 # ===========================================================================

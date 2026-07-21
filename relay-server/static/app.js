@@ -366,11 +366,25 @@
     if (e.ctrlKey && (e.key === 'l' || e.key === 'L')) return;
     if (e.key === 'F12' && !e.ctrlKey) return;
     if (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i')) return;
-    sendCmd({ type: 'key_down', key: e.key, ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey });
+    // Mac 快捷键映射：Cmd → Ctrl（让 Mac 的 Cmd+C 在 Windows 上变成 Ctrl+C）
+    const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+    const ctrl = isMac ? (e.ctrlKey || e.metaKey) : e.ctrlKey;
+    const alt = e.altKey;
+    const shift = e.shiftKey;
+    let key = e.key;
+    // Mac 上 Meta 键单独按下时映射为 Win 键
+    if (isMac && e.key === 'Meta') key = 'Meta';
+    sendCmd({ type: 'key_down', key: key, ctrl: ctrl, alt: alt, shift: shift });
     if (BLOCK_DEFAULT_KEYS.has(e.key)) e.preventDefault();
   });
   document.addEventListener('keyup', (e) => {
-    sendCmd({ type: 'key_up', key: e.key, ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey });
+    const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+    const ctrl = isMac ? (e.ctrlKey || e.metaKey) : e.ctrlKey;
+    const alt = e.altKey;
+    const shift = e.shiftKey;
+    let key = e.key;
+    if (isMac && e.key === 'Meta') key = 'Meta';
+    sendCmd({ type: 'key_up', key: key, ctrl: ctrl, alt: alt, shift: shift });
     if (BLOCK_DEFAULT_KEYS.has(e.key)) e.preventDefault();
   });
 
@@ -491,14 +505,33 @@
   });
 
   // ---------- 声音播放 ----------
+  // μ-law 解码查找表（256 项）
+  const _mulawDecode = (() => {
+    const table = new Float32Array(256);
+    for (let i = 0; i < 256; i++) {
+      const bits = ~i & 0xFF;
+      const sign = (bits & 0x80) ? -1 : 1;
+      let exponent = (bits >> 4) & 0x07;
+      let mantissa = bits & 0x0F;
+      let sample = ((mantissa << 3) + 0x84) << exponent;
+      sample = sample - 0x84;
+      table[i] = sign * sample / 32768.0;
+    }
+    return table;
+  })();
+
   function playAudio(buffer, offset) {
     if (!audioCtx) {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     }
-    // 如果 AudioContext 被挂起，恢复它
     if (audioCtx.state === 'suspended') audioCtx.resume();
 
-    const pcm = new Float32Array(buffer, offset);
+    // μ-law → Float32 解码
+    const encoded = new Uint8Array(buffer, offset);
+    const pcm = new Float32Array(encoded.length);
+    for (let i = 0; i < encoded.length; i++) {
+      pcm[i] = _mulawDecode[encoded[i]];
+    }
     if (pcm.length === 0) return;
 
     const audioBuffer = audioCtx.createBuffer(1, pcm.length, audioRate);

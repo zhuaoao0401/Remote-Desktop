@@ -70,16 +70,24 @@ async def login_page(request: Request):
 
 @app.post("/login")
 async def login(request: Request):
+    client_ip = request.client.host if request.client else "unknown"
+    if not sessions.check_rate_limit(client_ip):
+        remaining = sessions.get_remaining_lock(client_ip)
+        return JSONResponse({"ok": False,
+                             "error": f"登录失败次数过多，请 {remaining} 秒后再试"},
+                            status_code=429)
     form = await request.form()
     username = form.get("username", "")
     password = form.get("password", "")
     if authenticate(username, password):
+        sessions.record_success(client_ip)
         token = sessions.create(username)
         resp = JSONResponse({"ok": True, "token": token,
                              "redirect": f"/hosts?token={token}"})
         resp.set_cookie("rd_token", token, httponly=True,
                         max_age=config.SESSION_EXPIRY)
         return resp
+    sessions.record_failed_attempt(client_ip)
     return JSONResponse({"ok": False, "error": "用户名或密码错误"}, status_code=401)
 
 
