@@ -37,10 +37,11 @@ class AgentState:
     """Agent 运行状态管理。"""
 
     CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".remote_desktop_config.json")
+    DEFAULT_RELAY_URL = "ws://43.163.239.11:9090"
 
     def __init__(self):
         self.hostname = ""
-        self.relay_url = ""
+        self.relay_url = self.DEFAULT_RELAY_URL
         self.token = config.AGENT_TOKEN
         self.desktop_id = ""
         self.status = "idle"
@@ -49,18 +50,20 @@ class AgentState:
         self._stop_flag = False
         self.last_connected = None
         self._ws = None
-        # 启动时加载持久化配置
+        # 启动时加载持久化配置（覆盖默认值）
         self.load_config()
 
     def load_config(self):
-        """从本地文件加载配置。"""
+        """从本地文件加载配置，覆盖默认值。"""
         try:
             import json
             if os.path.exists(self.CONFIG_FILE):
                 with open(self.CONFIG_FILE, 'r', encoding='utf-8') as f:
                     cfg = json.load(f)
-                self.hostname = cfg.get('hostname', '')
-                self.relay_url = cfg.get('relay_url', '')
+                if cfg.get('hostname'):
+                    self.hostname = cfg['hostname']
+                if cfg.get('relay_url'):
+                    self.relay_url = cfg['relay_url']
                 if cfg.get('token'):
                     self.token = cfg['token']
         except Exception:
@@ -152,10 +155,10 @@ CONFIG_PAGE_HTML = """<!DOCTYPE html>
                value="" maxlength="32">
       </div>
       <div class="form-group">
-        <label for="relay">中继服务器地址</label>
-        <input type="text" id="relay" required placeholder="ws://1.2.3.4:9090"
-               value="">
-      </div>
+      <label for="relay">中继服务器地址</label>
+      <input type="text" id="relay" placeholder="ws://43.163.239.11:9090"
+             value="ws://43.163.239.11:9090">
+    </div>
       <div class="form-group">
         <label for="token">代理令牌</label>
         <input type="text" id="token" placeholder="留空使用默认令牌"
@@ -174,10 +177,34 @@ CONFIG_PAGE_HTML = """<!DOCTYPE html>
 
   <!-- 远程控制 -->
   <div id="tab-control" class="tab-panel">
-    <p class="subtitle">连接到中继服务器，控制其他电脑</p>
+    <p class="subtitle">控制本机或远程电脑</p>
+
+    <!-- 连接模式选择 -->
+    <div class="form-group">
+      <label>连接模式</label>
+      <div style="display:flex;gap:12px;margin-top:4px;">
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:14px;">
+          <input type="radio" name="connMode" value="relay" checked onchange="onModeChange()">
+          中继模式
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:14px;">
+          <input type="radio" name="connMode" value="direct" onchange="onModeChange()">
+          直连模式
+        </label>
+      </div>
+      <p id="modeHint" style="font-size:12px;color:var(--muted);margin-top:4px;">
+        中继模式：通过中继服务器连接，适合远程控制
+      </p>
+    </div>
+
+    <button class="btn-primary" style="width:100%;margin-bottom:12px;"
+            onclick="controlLocal()" id="controlLocalBtn">🖥️ 控制本机桌面</button>
+
+    <hr style="border:none;border-top:1px solid var(--border);margin:12px 0;">
+    <p class="subtitle" style="font-size:13px;">或手动连接中继服务器控制远程电脑：</p>
     <div class="relay-input-group">
-      <input type="text" id="ctrlRelay" placeholder="http://1.2.3.4:9090"
-             value="" id="ctrlRelay">
+      <input type="text" id="ctrlRelay" placeholder="http://43.163.239.11:9090"
+             value="http://43.163.239.11:9090">
       <button class="btn-primary" style="white-space:nowrap;" onclick="loadHosts()">连接</button>
     </div>
     <div id="ctrlLogin" style="display:none;">
@@ -234,8 +261,8 @@ async function refresh() {
   try {
     const r = await fetch('/api/state');
     const d = await r.json();
-    $('hostname').value = d.hostname || $('hostname').value;
-    $('relay').value = d.relay_url || $('relay').value;
+    if (d.hostname) $('hostname').value = d.hostname;
+    if (d.relay_url) $('relay').value = d.relay_url;
     setStatus(d.status, d.message);
     const running = d.status === 'connected' || d.status === 'connecting';
     $('startBtn').style.display = running ? 'none' : 'block';
@@ -246,9 +273,9 @@ async function refresh() {
 $('cfgForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const hostname = $('hostname').value.trim();
-  const relay = $('relay').value.trim();
+  const relay = $('relay').value.trim() || 'ws://43.163.239.11:9090';
   const token = $('token').value.trim();
-  if (!hostname || !relay) return;
+  if (!hostname) { alert('请输入主机名'); return; }
   $('startBtn').disabled = true;
   $('startBtn').textContent = '启动中...';
   try {
@@ -294,6 +321,36 @@ async function toggleAutostart() {
 checkAutostart();
 
 // ---- 远程控制 ----
+function getConnMode() {
+  const checked = document.querySelector('input[name="connMode"]:checked');
+  return checked ? checked.value : 'relay';
+}
+
+function onModeChange() {
+  const mode = getConnMode();
+  const hint = $('modeHint');
+  const btn = $('controlLocalBtn');
+  if (mode === 'relay') {
+    hint.textContent = '中继模式：通过中继服务器连接，适合远程控制';
+    btn.textContent = '🖥️ 控制本机桌面（中继）';
+  } else {
+    hint.textContent = '直连模式：直接连接本机，无需中继服务器';
+    btn.textContent = '🖥️ 控制本机桌面（直连）';
+  }
+}
+
+function controlLocal() {
+  const mode = getConnMode();
+  if (mode === 'direct') {
+    // 直连模式：跳转到本机登录页
+    location.href = '/';
+  } else {
+    // 中继模式：跳转到中继服务器控制页面
+    const relayUrl = $('ctrlRelay').value.trim() || 'http://43.163.239.11:9090';
+    window.open(relayUrl + '/', '_blank');
+  }
+}
+
 async function loadHosts() {
   const relayUrl = $('ctrlRelay').value.trim().replace(/\\/$/, '');
   if (!relayUrl) { alert('请输入中继服务器地址'); return; }
@@ -417,12 +474,10 @@ async def get_state():
 async def api_start(request: Request):
     body = await request.json()
     hostname = (body.get("hostname") or "").strip()
-    relay = (body.get("relay") or "").strip()
+    relay = (body.get("relay") or "").strip() or AgentState.DEFAULT_RELAY_URL
     token = (body.get("token") or "").strip()
     if not hostname:
         return JSONResponse({"ok": False, "error": "请输入主机名"}, status_code=400)
-    if not relay:
-        return JSONResponse({"ok": False, "error": "请输入中继地址"}, status_code=400)
     if state._thread is not None:
         return JSONResponse({"ok": False, "error": "已在运行，请先停止"}, status_code=400)
 

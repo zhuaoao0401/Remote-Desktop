@@ -13,14 +13,14 @@ from config import verify_password, USERS
 try:
     from PIL import Image
     HAS_PIL = True
-except ImportError:
+except Exception:
     HAS_PIL = False
     Image = None
 
 try:
     import mss
     HAS_MSS = True
-except ImportError:
+except Exception:
     HAS_MSS = False
 
 try:
@@ -28,21 +28,22 @@ try:
     pyautogui.FAILSAFE = False   # 禁用鼠标移到角落触发的保护中断
     pyautogui.PAUSE = 0          # 禁用每次操作的自动延时
     HAS_PYAUTOGUI = True
-except ImportError:
+except Exception:
     HAS_PYAUTOGUI = False
 
 try:
     import pyperclip
     HAS_PYPERCLIP = True
-except ImportError:
+except Exception:
     HAS_PYPERCLIP = False
 
 try:
     import soundcard as sc
     import numpy as np
     HAS_SOUNDCARD = True
-except ImportError:
+except Exception:
     HAS_SOUNDCARD = False
+    np = None
 
 
 class ScreenCapture:
