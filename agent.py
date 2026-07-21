@@ -177,7 +177,11 @@ CONFIG_PAGE_HTML = """<!DOCTYPE html>
 
   <!-- 远程控制 -->
   <div id="tab-control" class="tab-panel">
-    <p class="subtitle">连接到中继服务器，控制其他电脑</p>
+    <p class="subtitle">控制本机或远程电脑</p>
+    <button class="btn-primary" style="width:100%;margin-bottom:12px;"
+            onclick="controlLocal()">🖥️ 控制本机桌面（直连）</button>
+    <hr style="border:none;border-top:1px solid var(--border);margin:12px 0;">
+    <p class="subtitle" style="font-size:13px;">或通过中继控制远程电脑：</p>
     <div class="relay-input-group">
       <input type="text" id="ctrlRelay" placeholder="http://43.163.239.11:9090"
              value="http://43.163.239.11:9090">
@@ -297,6 +301,11 @@ async function toggleAutostart() {
 checkAutostart();
 
 // ---- 远程控制 ----
+function controlLocal() {
+  // 直连模式：直接跳转到登录页，登录后进入桌面
+  location.href = '/';
+}
+
 async function loadHosts() {
   const relayUrl = $('ctrlRelay').value.trim().replace(/\\/$/, '');
   if (!relayUrl) { alert('请输入中继服务器地址'); return; }

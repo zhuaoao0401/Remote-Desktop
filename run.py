@@ -189,7 +189,7 @@ def start_services(port=8799, open_browser=True):
     if open_browser:
         def _open():
             time.sleep(1.5)
-            webbrowser.open(f"http://localhost:{port}/config")
+            webbrowser.open(f"http://localhost:{port}/")
         threading.Thread(target=_open, daemon=True).start()
 
     # 启动
