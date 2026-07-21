@@ -178,10 +178,30 @@ CONFIG_PAGE_HTML = """<!DOCTYPE html>
   <!-- 远程控制 -->
   <div id="tab-control" class="tab-panel">
     <p class="subtitle">控制本机或远程电脑</p>
+
+    <!-- 连接模式选择 -->
+    <div class="form-group">
+      <label>连接模式</label>
+      <div style="display:flex;gap:12px;margin-top:4px;">
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:14px;">
+          <input type="radio" name="connMode" value="relay" checked onchange="onModeChange()">
+          中继模式
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:14px;">
+          <input type="radio" name="connMode" value="direct" onchange="onModeChange()">
+          直连模式
+        </label>
+      </div>
+      <p id="modeHint" style="font-size:12px;color:var(--muted);margin-top:4px;">
+        中继模式：通过中继服务器连接，适合远程控制
+      </p>
+    </div>
+
     <button class="btn-primary" style="width:100%;margin-bottom:12px;"
-            onclick="controlLocal()">🖥️ 控制本机桌面（直连）</button>
+            onclick="controlLocal()" id="controlLocalBtn">🖥️ 控制本机桌面</button>
+
     <hr style="border:none;border-top:1px solid var(--border);margin:12px 0;">
-    <p class="subtitle" style="font-size:13px;">或通过中继控制远程电脑：</p>
+    <p class="subtitle" style="font-size:13px;">或手动连接中继服务器控制远程电脑：</p>
     <div class="relay-input-group">
       <input type="text" id="ctrlRelay" placeholder="http://43.163.239.11:9090"
              value="http://43.163.239.11:9090">
@@ -301,9 +321,34 @@ async function toggleAutostart() {
 checkAutostart();
 
 // ---- 远程控制 ----
+function getConnMode() {
+  const checked = document.querySelector('input[name="connMode"]:checked');
+  return checked ? checked.value : 'relay';
+}
+
+function onModeChange() {
+  const mode = getConnMode();
+  const hint = $('modeHint');
+  const btn = $('controlLocalBtn');
+  if (mode === 'relay') {
+    hint.textContent = '中继模式：通过中继服务器连接，适合远程控制';
+    btn.textContent = '🖥️ 控制本机桌面（中继）';
+  } else {
+    hint.textContent = '直连模式：直接连接本机，无需中继服务器';
+    btn.textContent = '🖥️ 控制本机桌面（直连）';
+  }
+}
+
 function controlLocal() {
-  // 直连模式：直接跳转到登录页，登录后进入桌面
-  location.href = '/';
+  const mode = getConnMode();
+  if (mode === 'direct') {
+    // 直连模式：跳转到本机登录页
+    location.href = '/';
+  } else {
+    // 中继模式：跳转到中继服务器控制页面
+    const relayUrl = $('ctrlRelay').value.trim() || 'http://43.163.239.11:9090';
+    window.open(relayUrl + '/', '_blank');
+  }
 }
 
 async function loadHosts() {
