@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from core import (ScreenCapture, DeltaScreenCapture, InputController,
-                  SessionManager, authenticate, pack_delta_frame)
+                  SessionManager, authenticate, pack_delta_frame, AudioCapture)
 import config
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -115,10 +115,14 @@ async def websocket_endpoint(ws: WebSocket):
     # 发送初始化信息（缩放后的画面尺寸，用于坐标映射）
     w, h = screen.get_size()
     monitors = screen.get_monitors()
+    audio_cap_supported = AudioCapture.is_available()
+    audio_obj = None
     await ws.send_text(json.dumps({
         "type": "init", "width": w, "height": h,
         "fps": config.SCREEN_FPS, "encoding": "delta",
         "monitors": monitors, "clipboard_supported": True,
+        "audio_supported": audio_cap_supported,
+        "audio_rate": 22050,
     }))
 
     capture_task = None
@@ -129,6 +133,15 @@ async def websocket_endpoint(ws: WebSocket):
     file_path = ""
     loop = asyncio.get_event_loop()
     try:
+        # 如果支持音频，启动音频采集
+        if audio_cap_supported:
+            try:
+                audio_obj = AudioCapture()
+                audio_obj.start()
+            except Exception as e:
+                print(f"[音频] 采集失败: {e}")
+                audio_obj = None
+
         async def capture_loop():
             """持续采集屏幕增量并发送。"""
             while True:
@@ -140,6 +153,20 @@ async def websocket_endpoint(ws: WebSocket):
                     except Exception:
                         break
                 await asyncio.sleep(0.005)
+
+        async def audio_loop():
+            """采集系统音频并发送。"""
+            while True:
+                if not audio_obj:
+                    await asyncio.sleep(1)
+                    continue
+                chunk = await loop.run_in_executor(None, audio_obj.capture_chunk)
+                if chunk:
+                    try:
+                        await ws.send_bytes(b'AUDI' + chunk)
+                    except Exception:
+                        pass
+                await asyncio.sleep(0.02)
 
         async def command_loop():
             """接收并执行远程命令。"""
@@ -227,6 +254,7 @@ async def websocket_endpoint(ws: WebSocket):
                         print(f"[命令错误] {e}")
 
         capture_task = asyncio.create_task(capture_loop())
+        audio_task = asyncio.create_task(audio_loop())
         await command_loop()
     except WebSocketDisconnect:
         pass
@@ -235,6 +263,10 @@ async def websocket_endpoint(ws: WebSocket):
     finally:
         if capture_task and not capture_task.done():
             capture_task.cancel()
+        if audio_task and not audio_task.done():
+            audio_task.cancel()
+        if audio_obj:
+            audio_obj.stop()
         try:
             await ws.close()
         except Exception:

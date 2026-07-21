@@ -37,6 +37,13 @@ try:
 except ImportError:
     HAS_PYPERCLIP = False
 
+try:
+    import soundcard as sc
+    import numpy as np
+    HAS_SOUNDCARD = True
+except ImportError:
+    HAS_SOUNDCARD = False
+
 
 class ScreenCapture:
     """采集屏幕画面并以 JPEG 字节流返回。"""
@@ -434,6 +441,87 @@ class InputController:
                 return {"type": "clipboard_data", "text": ""}
         except Exception as e:
             print(f"[输入执行错误] {e}  命令: {command}")
+
+
+class AudioCapture:
+    """采集系统音频（WASAPI loopback），返回 PCM Float32 数据。
+
+    采样率降为 22050Hz 单声道，每帧约 0.1 秒。
+    """
+
+    TARGET_RATE = 22050  # 目标采样率（降采样省带宽）
+    FRAME_MS = 100       # 每帧时长（毫秒）
+
+    def __init__(self):
+        if not HAS_SOUNDCARD:
+            raise RuntimeError("未安装 soundcard，请运行: pip install soundcard")
+        self.mic = None
+        self.original_rate = 44100
+        self._running = False
+
+    def start(self):
+        """打开音频设备，开始采集。"""
+        # 找到默认播放设备的 loopback
+        try:
+            speaker = sc.default_speaker()
+            # 通过 speaker 名称匹配对应的 loopback microphone
+            all_mics = sc.all_microphones(loopback=True)
+            if all_mics:
+                self.mic = all_mics[0]
+            else:
+                # 回退：尝试所有麦克风
+                all_mics = sc.all_microphones()
+                if all_mics:
+                    self.mic = all_mics[0]
+                else:
+                    raise RuntimeError("无可用音频设备")
+        except Exception as e:
+            raise RuntimeError(f"无法打开音频设备: {e}")
+
+        self.mic.__enter__()
+        self._running = True
+
+    def stop(self):
+        """停止采集。"""
+        self._running = False
+        if self.mic:
+            try:
+                self.mic.__exit__(None, None, None)
+            except Exception:
+                pass
+            self.mic = None
+
+    def capture_chunk(self):
+        """采集一个音频块，返回 bytes（Float32 LE PCM，mono，22050Hz）。
+
+        返回 None 表示未运行或出错。
+        """
+        if not self._running or not self.mic:
+            return None
+        try:
+            # 每块采样数（原始采样率）
+            num_samples = int(self.original_rate * self.FRAME_MS / 1000)
+            data = self.mic.record(numframes=num_samples)
+            # data: shape (num_samples, channels) float32
+            if data.ndim > 1:
+                # 多声道转单声道：取平均
+                data = data.mean(axis=1)
+            # 降采样：简单间隔采样
+            if self.original_rate != self.TARGET_RATE:
+                ratio = self.original_rate / self.TARGET_RATE
+                indices = np.arange(0, len(data), ratio).astype(int)
+                data = data[indices]
+            # 确保 float32
+            data = data.astype(np.float32)
+            return data.tobytes()
+        except Exception as e:
+            print(f"[音频采集错误] {e}")
+            return None
+
+    @staticmethod
+    def is_available():
+        """检查音频采集是否可用。"""
+        return HAS_SOUNDCARD
 
 
 class SessionManager:

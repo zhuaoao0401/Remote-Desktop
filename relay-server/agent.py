@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import websockets
 
-from core import DeltaScreenCapture, InputController, pack_delta_frame
+from core import DeltaScreenCapture, InputController, pack_delta_frame, AudioCapture
 import config
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -271,12 +271,15 @@ async def _agent_async_main():
 
                     w, h = screen.get_size()
                     monitors = screen.get_monitors()
+                    audio_cap = AudioCapture.is_available()
                     await ws.send(json.dumps({
                         "type": "init", "width": w, "height": h,
                         "fps": config.SCREEN_FPS, "encoding": "delta",
                         "hostname": state.hostname,
                         "monitors": monitors,
                         "clipboard_supported": True,
+                        "audio_supported": audio_cap,
+                        "audio_rate": 22050,
                     }))
 
                     loop = asyncio.get_event_loop()
@@ -287,8 +290,12 @@ async def _agent_async_main():
                     # 文件传输状态
                     file_recv = {"fp": None, "name": "", "size": 0, "received": 0}
 
+                    # 音频采集器
+                    audio = None
+                    audio_supported = AudioCapture.is_available()
+
                     async def capture_loop():
-                        nonlocal streaming_active
+                        nonlocal streaming_active, audio
                         while True:
                             if not streaming_active:
                                 # 没人看，不传画面，低频等待
@@ -302,6 +309,22 @@ async def _agent_async_main():
                                 except Exception:
                                     break
                             await asyncio.sleep(0.005)
+
+                    async def audio_loop():
+                        """音频采集循环：采集系统声音并发送。"""
+                        nonlocal streaming_active, audio
+                        while True:
+                            if not streaming_active or not audio:
+                                await asyncio.sleep(0.5)
+                                continue
+                            chunk = await loop.run_in_executor(None, audio.capture_chunk)
+                            if chunk:
+                                try:
+                                    # 音频消息：以 4 字节标记 AUDI 开头，区分画面数据
+                                    await ws.send(b'AUDI' + chunk)
+                                except Exception:
+                                    pass
+                            await asyncio.sleep(0.02)
 
                     async def command_loop():
                         nonlocal streaming_active
@@ -349,12 +372,25 @@ async def _agent_async_main():
                                     if not streaming_active:
                                         streaming_active = True
                                         screen.reset()
+                                        # 启动音频采集
+                                        if audio_supported and not audio:
+                                            try:
+                                                audio = AudioCapture()
+                                                audio.start()
+                                                print(f"[音频] 已开始采集系统声音")
+                                            except Exception as e:
+                                                print(f"[音频] 采集失败: {e}")
+                                                audio = None
                                         state.message = "已连接，正在传输画面"
                                         print(f"[开始传输] 控制端已接入")
                                     continue
                                 elif cmd_type == "stop_streaming":
                                     if streaming_active:
                                         streaming_active = False
+                                        # 停止音频采集
+                                        if audio:
+                                            audio.stop()
+                                            audio = None
                                         state.message = "已连接，等待控制端接入"
                                         print(f"[停止传输] 控制端已断开")
                                     continue
@@ -414,7 +450,7 @@ async def _agent_async_main():
                             except Exception as e:
                                 print(f"[命令错误] {e}")
 
-                    await asyncio.gather(capture_loop(), command_loop())
+                    await asyncio.gather(capture_loop(), audio_loop(), command_loop())
             except asyncio.CancelledError:
                 raise
             except (websockets.exceptions.ConnectionClosed,

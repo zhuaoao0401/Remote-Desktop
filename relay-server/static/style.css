@@ -188,3 +188,6 @@ body {
   border-radius: 6px; cursor: pointer; outline: none;
 }
 .monitor-select:hover { border-color: var(--accent); }
+
+/* 静音按钮状态 */
+.btn-muted { opacity: 0.4; }

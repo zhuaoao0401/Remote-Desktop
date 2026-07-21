@@ -25,6 +25,11 @@
   let lastFrameTime = 0;
   let frameLatency = 0;
 
+  // 音频播放
+  let audioCtx = null;
+  let audioEnabled = false;
+  let audioRate = 22050;
+
   // 画质自适应
   let pingTime = 0;
   let pingLatency = 0;
@@ -124,6 +129,11 @@
             `<option value="${m.index}">显示器 ${m.index} (${m.width}×${m.height})</option>`).join('');
           sel.style.display = 'inline-block';
         }
+        // 音频信息
+        if (msg.audio_supported) {
+          audioRate = msg.audio_rate || 22050;
+          document.getElementById('audioBtn').classList.remove('btn-muted');
+        }
       } else if (msg.type === 'agent_connected') {
         setStatus('已连接', 'connected');
         overlay.classList.add('hidden');
@@ -147,9 +157,17 @@
       }
       return;
     }
-    // 二进制增量帧
+    // 二进制消息：音频或画面帧
     try {
       const data = e.data;
+      const u8 = new Uint8Array(data);
+      // 检查是否是音频数据（以 'AUDI' 标记开头）
+      if (u8.length > 4 && u8[0] === 0x41 && u8[1] === 0x55 &&
+          u8[2] === 0x44 && u8[3] === 0x49) {
+        if (audioEnabled) playAudio(data, 4);
+        return;
+      }
+      // 画面增量帧
       const headerLen = new DataView(data, 0, 4).getUint32(0, false);
       const headerBytes = new Uint8Array(data, 4, headerLen);
       const header = JSON.parse(new TextDecoder().decode(headerBytes));
@@ -470,6 +488,42 @@
     link.download = 'screenshot_' + Date.now() + '.png';
     link.href = canvas.toDataURL('image/png');
     link.click();
+  });
+
+  // ---------- 声音播放 ----------
+  function playAudio(buffer, offset) {
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    // 如果 AudioContext 被挂起，恢复它
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+
+    const pcm = new Float32Array(buffer, offset);
+    if (pcm.length === 0) return;
+
+    const audioBuffer = audioCtx.createBuffer(1, pcm.length, audioRate);
+    audioBuffer.getChannelData(0).set(pcm);
+    const source = audioCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(audioCtx.destination);
+    source.start();
+  }
+
+  document.getElementById('audioBtn').addEventListener('click', () => {
+    audioEnabled = !audioEnabled;
+    const btn = document.getElementById('audioBtn');
+    if (audioEnabled) {
+      btn.textContent = '🔊';
+      btn.classList.remove('btn-muted');
+      // 首次点击需要用户交互来创建 AudioContext
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+    } else {
+      btn.textContent = '🔇';
+      btn.classList.add('btn-muted');
+    }
   });
 
   // ---------- 多显示器切换 ----------
