@@ -1,4 +1,7 @@
-/* 远程桌面控制台前端逻辑 */
+/* 远程桌面控制台前端逻辑（增强版）
+ * 功能：增量帧渲染、剪贴板同步、文件传输、画质自适应、
+ *       多显示器切换、截图、连接质量指示、移动端触摸支持
+ */
 (function () {
   'use strict';
 
@@ -8,6 +11,7 @@
   const fpsEl = document.getElementById('fps');
   const resEl = document.getElementById('resolution');
   const latencyEl = document.getElementById('latency');
+  const qualityEl = document.getElementById('quality-badge');
   const bandwidthEl = document.getElementById('bandwidth');
   const overlay = document.getElementById('overlay');
   const container = document.getElementById('screenContainer');
@@ -20,6 +24,14 @@
   let reconnectTimer = null;
   let lastFrameTime = 0;
   let frameLatency = 0;
+
+  // 画质自适应
+  let pingTime = 0;
+  let pingLatency = 0;
+  let latencyHistory = [];
+  let currentQuality = 55;
+  let currentFps = 15;
+  let autoQuality = true;
 
   // ---------- WebSocket 连接 ----------
   function wsUrl() {
@@ -34,30 +46,24 @@
   function connect() {
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     setStatus('连接中...', 'waiting');
-    try {
-      ws = new WebSocket(wsUrl());
-    } catch (e) {
-      scheduleReconnect();
-      return;
-    }
+    try { ws = new WebSocket(wsUrl()); } catch (e) { scheduleReconnect(); return; }
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
       connected = true;
       setStatus('已连接', 'connected');
       overlay.classList.add('hidden');
+      // 启动 ping
+      startPing();
     };
-
     ws.onmessage = onMessage;
-
     ws.onclose = () => {
       connected = false;
       setStatus('已断开，重连中...', 'disconnected');
       showOverlay('连接已断开，正在重连...');
       scheduleReconnect();
     };
-
-    ws.onerror = () => { /* onclose 会处理 */ };
+    ws.onerror = () => {};
   }
 
   function scheduleReconnect() {
@@ -66,8 +72,34 @@
   }
 
   function sendCmd(cmd) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(cmd));
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(cmd));
+  }
+
+  // ---------- Ping / 延迟测量 / 画质自适应 ----------
+  function startPing() {
+    if (pingInterval) clearInterval(pingInterval);
+    pingInterval = setInterval(() => {
+      if (!connected) return;
+      pingTime = performance.now();
+      sendCmd({ type: 'ping', t: pingTime });
+    }, 2000);
+  }
+  let pingInterval = null;
+
+  function autoAdjustQuality() {
+    if (!autoQuality) return;
+    // 根据平均延迟调整画质
+    const avgLat = latencyHistory.reduce((a, b) => a + b, 0) / Math.max(1, latencyHistory.length);
+    let newQ = currentQuality, newF = currentFps;
+    if (avgLat > 300) { newQ = 25; newF = 5; }       // 很差
+    else if (avgLat > 150) { newQ = 35; newF = 8; }   // 差
+    else if (avgLat > 80) { newQ = 45; newF = 12; }   // 一般
+    else { newQ = 55; newF = 15; }                     // 好
+    if (newQ !== currentQuality || newF !== currentFps) {
+      currentQuality = newQ;
+      currentFps = newF;
+      sendCmd({ type: 'set_quality', quality: newQ });
+      sendCmd({ type: 'set_fps', fps: newF });
     }
   }
 
@@ -82,34 +114,49 @@
         canvas.width = screenW;
         canvas.height = screenH;
         resEl.textContent = `${screenW}×${screenH}`;
-        // 清空画布，准备接收关键帧
         ctx.fillStyle = '#111';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         resizeCanvas();
+        // 多显示器列表
+        if (msg.monitors && msg.monitors.length > 1) {
+          const sel = document.getElementById('monitorSelect');
+          sel.innerHTML = msg.monitors.map(m =>
+            `<option value="${m.index}">显示器 ${m.index} (${m.width}×${m.height})</option>`).join('');
+          sel.style.display = 'inline-block';
+        }
       } else if (msg.type === 'agent_connected') {
         setStatus('已连接', 'connected');
         overlay.classList.add('hidden');
       } else if (msg.type === 'agent_disconnected') {
         setStatus('桌面离线', 'waiting');
         showOverlay(msg.message || '桌面未连接，等待代理上线...');
+      } else if (msg.type === 'pong') {
+        pingLatency = Math.round(performance.now() - msg.t);
+        latencyHistory.push(pingLatency);
+        if (latencyHistory.length > 10) latencyHistory.shift();
+        autoAdjustQuality();
+      } else if (msg.type === 'clipboard_data') {
+        // 收到被控端剪贴板内容，写入本地剪贴板
+        if (msg.text) {
+          try { await navigator.clipboard.writeText(msg.text); } catch (_) {}
+        }
+      } else if (msg.type === 'file_progress') {
+        updateFileProgress(msg.percent, msg.name, msg.received, msg.size);
+      } else if (msg.type === 'file_done') {
+        finishFileProgress(msg.name, msg.path);
       }
       return;
     }
-    // 二进制增量帧：解析打包格式并局部重绘
+    // 二进制增量帧
     try {
       const data = e.data;
-      // 读取 4 字节头长度（大端）
       const headerLen = new DataView(data, 0, 4).getUint32(0, false);
-      // 解析 JSON 头
       const headerBytes = new Uint8Array(data, 4, headerLen);
       const header = JSON.parse(new TextDecoder().decode(headerBytes));
-      // 块数据起始偏移
       const tilesDataStart = 4 + headerLen;
       const tilesData = new Uint8Array(data, tilesDataStart);
 
-      // 处理每个变化的块
       if (header.tiles && header.tiles.length > 0) {
-        // 并行解码所有块
         const drawPromises = header.tiles.map(async (tile) => {
           const tileBytes = tilesData.subarray(tile.offset, tile.offset + tile.length);
           const bitmap = await createImageBitmap(
@@ -120,13 +167,10 @@
         });
         await Promise.all(drawPromises);
       }
-
       frameCount++;
       bytesPerSec += e.data.byteLength;
       frameLatency = Math.round(performance.now() - lastFrameTime);
-    } catch (err) {
-      // 解码失败，忽略此帧
-    }
+    } catch (err) {}
     lastFrameTime = performance.now();
   }
 
@@ -153,18 +197,24 @@
     overlay.classList.remove('hidden');
   }
 
-  // FPS / 延迟 / 流量统计
+  // FPS / 延迟 / 流量 / 画质统计
   setInterval(() => {
     fpsEl.textContent = frameCount + ' FPS';
-    latencyEl.textContent = frameLatency ? frameLatency + 'ms' : '';
-    // 流量显示：转换为 KB/s 或 MB/s
-    if (bytesPerSec > 1024 * 1024) {
-      bandwidthEl.textContent = (bytesPerSec / 1024 / 1024).toFixed(1) + ' MB/s';
-    } else if (bytesPerSec > 0) {
-      bandwidthEl.textContent = (bytesPerSec / 1024).toFixed(0) + ' KB/s';
-    } else {
-      bandwidthEl.textContent = '';
+    latencyEl.textContent = pingLatency ? pingLatency + 'ms' : '';
+    // 画质/连接质量指示
+    if (pingLatency > 0) {
+      let qText, qClass;
+      if (pingLatency > 300) { qText = '差'; qClass = 'q-bad'; }
+      else if (pingLatency > 150) { qText = '一般'; qClass = 'q-mid'; }
+      else if (pingLatency > 80) { qText = '良好'; qClass = 'q-ok'; }
+      else { qText = '优秀'; qClass = 'q-good'; }
+      qualityEl.textContent = qText + ' Q' + currentQuality;
+      qualityEl.className = 'badge ' + qClass;
     }
+    // 流量
+    if (bytesPerSec > 1024 * 1024) bandwidthEl.textContent = (bytesPerSec / 1024 / 1024).toFixed(1) + ' MB/s';
+    else if (bytesPerSec > 0) bandwidthEl.textContent = (bytesPerSec / 1024).toFixed(0) + ' KB/s';
+    else bandwidthEl.textContent = '';
     frameCount = 0;
     bytesPerSec = 0;
   }, 1000);
@@ -179,95 +229,128 @@
       y: Math.round((e.clientY - rect.top) * scaleY),
     };
   }
-  function buttonName(btn) {
-    return ['left', 'middle', 'right'][btn] || 'left';
-  }
+  function buttonName(btn) { return ['left', 'middle', 'right'][btn] || 'left'; }
 
   // ---------- 鼠标事件 ----------
   let lastMoveTime = 0;
   canvas.addEventListener('mousemove', (e) => {
     const now = performance.now();
-    if (now - lastMoveTime < 14) return; // 限流 ~70fps
+    if (now - lastMoveTime < 14) return;
     lastMoveTime = now;
     const { x, y } = getCoords(e);
     sendCmd({ type: 'mouse_move', x, y });
   });
-
   canvas.addEventListener('mousedown', (e) => {
     const { x, y } = getCoords(e);
     sendCmd({ type: 'mouse_down', x, y, button: buttonName(e.button) });
     e.preventDefault();
   });
-
   canvas.addEventListener('mouseup', (e) => {
     const { x, y } = getCoords(e);
     sendCmd({ type: 'mouse_up', x, y, button: buttonName(e.button) });
     e.preventDefault();
   });
-
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-
   canvas.addEventListener('dblclick', (e) => {
     const { x, y } = getCoords(e);
     sendCmd({ type: 'mouse_double', x, y });
   });
-
   canvas.addEventListener('wheel', (e) => {
     const { x, y } = getCoords(e);
     sendCmd({ type: 'mouse_scroll', x, y, delta: -Math.sign(e.deltaY) * 120 });
     e.preventDefault();
   }, { passive: false });
 
-  // 触摸支持（基础）
+  // ---------- 移动端触摸支持（增强版） ----------
+  let touchState = { mode: 'none', startX: 0, startY: 0, lastX: 0, lastY: 0,
+                      startDist: 0, longPressTimer: null, moved: false };
+
+  function touchCoords(t) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    return { x: Math.round((t.clientX - rect.left) * scaleX),
+             y: Math.round((t.clientY - rect.top) * scaleY) };
+  }
+
   canvas.addEventListener('touchstart', (e) => {
-    if (e.touches.length === 1) {
-      const t = e.touches[0];
-      const rect = canvas.getBoundingClientRect();
-      const scaleX = canvas.width / rect.width;
-      const scaleY = canvas.height / rect.height;
-      const x = Math.round((t.clientX - rect.left) * scaleX);
-      const y = Math.round((t.clientY - rect.top) * scaleY);
-      sendCmd({ type: 'mouse_move', x, y });
-      sendCmd({ type: 'mouse_down', x, y, button: 'left' });
-    }
     e.preventDefault();
+    const touches = e.touches;
+    touchState.moved = false;
+    if (touches.length === 1) {
+      // 单指：移动 + 点击
+      const c = touchCoords(touches[0]);
+      touchState.mode = 'move';
+      touchState.startX = c.x; touchState.startY = c.y;
+      touchState.lastX = c.x; touchState.lastY = c.y;
+      sendCmd({ type: 'mouse_move', x: c.x, y: c.y });
+      // 长按检测 → 右键
+      touchState.longPressTimer = setTimeout(() => {
+        if (!touchState.moved) {
+          sendCmd({ type: 'mouse_down', x: touchState.lastX, y: touchState.lastY, button: 'right' });
+          sendCmd({ type: 'mouse_up', x: touchState.lastX, y: touchState.lastY, button: 'right' });
+          touchState.mode = 'none';
+        }
+      }, 600);
+    } else if (touches.length === 2) {
+      // 双指：滚动或缩放
+      touchState.mode = 'scroll';
+      clearTimeout(touchState.longPressTimer);
+      const dx = touches[0].clientX - touches[1].clientX;
+      const dy = touches[0].clientY - touches[1].clientY;
+      touchState.startDist = Math.hypot(dx, dy);
+      touchState.lastY = (touches[0].clientY + touches[1].clientY) / 2;
+    }
   }, { passive: false });
+
   canvas.addEventListener('touchmove', (e) => {
-    if (e.touches.length === 1) {
-      const t = e.touches[0];
-      const rect = canvas.getBoundingClientRect();
-      const scaleX = canvas.width / rect.width;
-      const scaleY = canvas.height / rect.height;
-      const x = Math.round((t.clientX - rect.left) * scaleX);
-      const y = Math.round((t.clientY - rect.top) * scaleY);
-      sendCmd({ type: 'mouse_move', x, y });
+    e.preventDefault();
+    const touches = e.touches;
+    if (touches.length === 1 && touchState.mode === 'move') {
+      const c = touchCoords(touches[0]);
+      if (Math.abs(c.x - touchState.startX) > 5 || Math.abs(c.y - touchState.startY) > 5) {
+        touchState.moved = true;
+        clearTimeout(touchState.longPressTimer);
+      }
+      sendCmd({ type: 'mouse_move', x: c.x, y: c.y });
+      touchState.lastX = c.x; touchState.lastY = c.y;
+    } else if (touches.length === 2 && touchState.mode === 'scroll') {
+      const midY = (touches[0].clientY + touches[1].clientY) / 2;
+      const dy = Math.round(midY - touchState.lastY);
+      if (Math.abs(dy) > 3) {
+        sendCmd({ type: 'mouse_scroll', x: touchState.lastX, y: touchState.lastY, delta: -dy * 5 });
+        touchState.lastY = midY;
+      }
     }
-    e.preventDefault();
   }, { passive: false });
+
   canvas.addEventListener('touchend', (e) => {
-    sendCmd({ type: 'mouse_up', button: 'left' });
     e.preventDefault();
+    clearTimeout(touchState.longPressTimer);
+    if (touchState.mode === 'move' && !touchState.moved) {
+      // 轻触 = 左键点击
+      sendCmd({ type: 'mouse_down', x: touchState.lastX, y: touchState.lastY, button: 'left' });
+      sendCmd({ type: 'mouse_up', x: touchState.lastX, y: touchState.lastY, button: 'left' });
+    } else if (touchState.mode === 'move') {
+      sendCmd({ type: 'mouse_up', button: 'left' });
+    }
+    touchState.mode = 'none';
   }, { passive: false });
 
   // ---------- 键盘事件 ----------
-  // 这些按键会阻止浏览器默认行为，确保转发到远程桌面
   const BLOCK_DEFAULT_KEYS = new Set([
     'Tab', 'Backspace', ' ', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
     'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
     'Home', 'End', 'PageUp', 'PageDown',
   ]);
-
   document.addEventListener('keydown', (e) => {
-    // 不拦截浏览器自身的刷新/开发者工具等组合键
     if (e.ctrlKey && (e.key === 'r' || e.key === 'R')) return;
     if (e.ctrlKey && (e.key === 'l' || e.key === 'L')) return;
     if (e.key === 'F12' && !e.ctrlKey) return;
     if (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i')) return;
-
     sendCmd({ type: 'key_down', key: e.key, ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey });
     if (BLOCK_DEFAULT_KEYS.has(e.key)) e.preventDefault();
   });
-
   document.addEventListener('keyup', (e) => {
     sendCmd({ type: 'key_up', key: e.key, ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey });
     if (BLOCK_DEFAULT_KEYS.has(e.key)) e.preventDefault();
@@ -278,14 +361,120 @@
   textPaste.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       const text = textPaste.value;
-      if (text) {
-        sendCmd({ type: 'type_text', text: text });
-        textPaste.value = '';
-      }
+      if (text) { sendCmd({ type: 'type_text', text: text }); textPaste.value = ''; }
       e.preventDefault();
     }
-    // 阻止普通字符键被全局键盘处理器转发
     e.stopPropagation();
+  });
+
+  // ---------- 剪贴板同步 ----------
+  document.getElementById('clipboardBtn').addEventListener('click', async () => {
+    // 先获取被控端剪贴板 → 写入本地
+    sendCmd({ type: 'get_clipboard' });
+    // 短暂延迟后，把本地剪贴板发给被控端
+    setTimeout(async () => {
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text) sendCmd({ type: 'set_clipboard', text: text });
+      } catch (_) {}
+    }, 500);
+  });
+
+  // Ctrl+C / Ctrl+V 时自动同步
+  document.addEventListener('copy', () => {
+    try {
+      navigator.clipboard.readText().then(text => {
+        if (text) sendCmd({ type: 'set_clipboard', text: text });
+      }).catch(() => {});
+    } catch (_) {}
+  });
+
+  // ---------- 文件传输 ----------
+  const fileInput = document.getElementById('fileInput');
+  const fileProgEl = document.getElementById('fileProgress');
+  const fileProgBar = document.getElementById('fileProgressBar');
+  const fileProgName = document.getElementById('fileProgressName');
+  const fileProgPct = document.getElementById('fileProgressPercent');
+  let fileTransferring = false;
+
+  document.getElementById('fileBtn').addEventListener('click', () => {
+    if (fileTransferring) return;
+    fileInput.click();
+  });
+
+  fileInput.addEventListener('change', async () => {
+    const files = fileInput.files;
+    if (!files || files.length === 0) return;
+    for (const file of files) {
+      await sendFile(file);
+    }
+    fileInput.value = '';
+  });
+
+  // 拖拽上传
+  canvas.addEventListener('dragover', (e) => { e.preventDefault(); });
+  canvas.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    if (fileTransferring) return;
+    const files = e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+    for (const file of files) { await sendFile(file); }
+  });
+
+  async function sendFile(file) {
+    const CHUNK_SIZE = 64 * 1024; // 64KB chunks
+    fileTransferring = true;
+    fileProgEl.style.display = 'block';
+    fileProgName.textContent = file.name;
+    fileProgPct.textContent = '0%';
+    fileProgBar.style.width = '0%';
+
+    // 通知 agent 开始接收
+    sendCmd({ type: 'file_start', name: file.name, size: file.size });
+
+    let offset = 0;
+    while (offset < file.size) {
+      const slice = file.slice(offset, offset + CHUNK_SIZE);
+      const buf = await slice.arrayBuffer();
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(buf);
+      } else {
+        sendCmd({ type: 'file_cancel' });
+        break;
+      }
+      offset += buf.byteLength;
+      // 等 agent 确认进度（避免发太快）
+      await new Promise(r => setTimeout(r, 30));
+    }
+    // 等待 file_done 确认（超时 10 秒自动关闭进度条）
+    setTimeout(() => {
+      if (fileTransferring) { fileProgEl.style.display = 'none'; fileTransferring = false; }
+    }, 10000);
+  }
+
+  function updateFileProgress(pct, name, received, size) {
+    fileProgBar.style.width = Math.min(100, pct) + '%';
+    fileProgPct.textContent = Math.min(100, pct) + '%';
+    if (name) fileProgName.textContent = name;
+  }
+  function finishFileProgress(name, path) {
+    fileProgPct.textContent = '完成!';
+    fileProgBar.style.width = '100%';
+    setTimeout(() => { fileProgEl.style.display = 'none'; }, 2000);
+    fileTransferring = false;
+  }
+
+  // ---------- 截图 ----------
+  document.getElementById('screenshotBtn').addEventListener('click', () => {
+    const link = document.createElement('a');
+    link.download = 'screenshot_' + Date.now() + '.png';
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+  });
+
+  // ---------- 多显示器切换 ----------
+  document.getElementById('monitorSelect').addEventListener('change', (e) => {
+    sendCmd({ type: 'switch_monitor', index: parseInt(e.target.value) });
   });
 
   // ---------- 虚拟键盘 ----------
@@ -306,13 +495,9 @@
     if (ws) { try { ws.close(); } catch (_) {} }
     connect();
   });
-
   document.getElementById('fullscreenBtn').addEventListener('click', () => {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(() => {});
-    } else {
-      document.exitFullscreen();
-    }
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
+    else document.exitFullscreen();
   });
 
   // 启动连接

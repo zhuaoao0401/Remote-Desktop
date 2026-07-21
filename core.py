@@ -31,6 +31,12 @@ try:
 except ImportError:
     HAS_PYAUTOGUI = False
 
+try:
+    import pyperclip
+    HAS_PYPERCLIP = True
+except ImportError:
+    HAS_PYPERCLIP = False
+
 
 class ScreenCapture:
     """采集屏幕画面并以 JPEG 字节流返回。"""
@@ -138,6 +144,45 @@ class DeltaScreenCapture:
         self._prev_luma = None
         self._prev_img = None
         self.last_keyframe_time = 0.0
+
+    def get_monitors(self):
+        """返回所有显示器列表 [{index, width, height}]。"""
+        monitors = []
+        for i, m in enumerate(self.sct.monitors):
+            if i == 0:
+                continue  # monitors[0] 是虚拟全屏
+            monitors.append({
+                "index": i,
+                "width": m["width"],
+                "height": m["height"],
+            })
+        return monitors
+
+    def switch_monitor(self, monitor_idx):
+        """切换到指定显示器。"""
+        if monitor_idx < 1 or monitor_idx >= len(self.sct.monitors):
+            return False
+        self.monitor_idx = monitor_idx
+        m = self.sct.monitors[self.monitor_idx]
+        self.src_w = m['width']
+        self.src_h = m['height']
+        self.dst_w = max(1, int(self.src_w * self.scale))
+        self.dst_h = max(1, int(self.src_h * self.scale))
+        self.cols = (self.dst_w + self.TILE - 1) // self.TILE
+        self.rows = (self.dst_h + self.TILE - 1) // self.TILE
+        self.reset()
+        return True
+
+    def set_quality(self, quality):
+        """动态调整 JPEG 质量。"""
+        self.quality = max(10, min(95, quality))
+
+    def set_fps(self, fps):
+        """动态调整帧率。"""
+        self.fps = max(1, min(60, fps))
+        self.min_interval = 1.0 / self.fps
+        self.idle_fps = min(self.IDLE_FPS, self.fps)
+        self.idle_interval = 1.0 / self.idle_fps
 
     def get_size(self):
         """返回缩放后的画面尺寸 (宽, 高)。"""
@@ -373,6 +418,20 @@ class InputController:
                 text = command.get('text', '')
                 if text:
                     pyautogui.typewrite(text, interval=0)
+            elif t == 'set_clipboard':
+                # 设置被控端剪贴板内容
+                text = command.get('text', '')
+                if HAS_PYPERCLIP and text:
+                    pyperclip.copy(text)
+            elif t == 'get_clipboard':
+                # 读取被控端剪贴板内容（返回给控制端）
+                if HAS_PYPERCLIP:
+                    try:
+                        text = pyperclip.paste()
+                        return {"type": "clipboard_data", "text": text or ""}
+                    except Exception:
+                        return {"type": "clipboard_data", "text": ""}
+                return {"type": "clipboard_data", "text": ""}
         except Exception as e:
             print(f"[输入执行错误] {e}  命令: {command}")
 

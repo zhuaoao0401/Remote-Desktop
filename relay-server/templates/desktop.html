@@ -2,8 +2,8 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>远程桌面 - 控制台</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>远程桌面 - {{ hostname }}</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="desktop-body">
@@ -14,10 +14,15 @@
       <span id="fps" class="badge">0 FPS</span>
       <span id="resolution" class="badge"></span>
       <span id="latency" class="badge"></span>
+      <span id="quality-badge" class="badge"></span>
       <span id="bandwidth" class="badge"></span>
     </div>
     <div class="toolbar-right">
       <span class="user">👤 {{ username }}</span>
+      <select id="monitorSelect" class="btn-small monitor-select" style="display:none;" title="切换显示器"></select>
+      <button id="clipboardBtn" class="btn-small" title="同步剪贴板">📋</button>
+      <button id="fileBtn" class="btn-small" title="传文件到被控端">📁</button>
+      <button id="screenshotBtn" class="btn-small" title="截图保存">📸</button>
       <a href="/hosts?token={{ token }}" class="btn-small">主机列表</a>
       <button id="reconnectBtn" class="btn-small">重连</button>
       <button id="fullscreenBtn" class="btn-small">全屏</button>
@@ -28,6 +33,14 @@
   <div class="screen-container" id="screenContainer">
     <canvas id="screen"></canvas>
     <div id="overlay" class="overlay">正在连接桌面...</div>
+  </div>
+  <!-- 文件传输进度条 -->
+  <div id="fileProgress" class="file-progress" style="display:none;">
+    <div class="file-progress-header">
+      <span id="fileProgressName">传输中...</span>
+      <span id="fileProgressPercent">0%</span>
+    </div>
+    <div class="file-progress-bar"><div id="fileProgressBar" class="file-progress-fill"></div></div>
   </div>
   <!-- 虚拟键盘面板 -->
   <div id="kbdPanel" class="kbd-panel" style="display:none;">
@@ -64,6 +77,7 @@
   </div>
   <input type="text" id="textPaste" class="text-paste"
          placeholder="在此粘贴文字后回车，可发送到远程桌面">
+  <input type="file" id="fileInput" style="display:none;" multiple>
   <script>
     const MODE = '{{ mode }}';
     const TOKEN = '{{ token }}';

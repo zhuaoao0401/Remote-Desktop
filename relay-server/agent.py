@@ -270,16 +270,22 @@ async def _agent_async_main():
                     print(f"[已连接] 主机={state.hostname} 中继={state.relay_url}")
 
                     w, h = screen.get_size()
+                    monitors = screen.get_monitors()
                     await ws.send(json.dumps({
                         "type": "init", "width": w, "height": h,
                         "fps": config.SCREEN_FPS, "encoding": "delta",
                         "hostname": state.hostname,
+                        "monitors": monitors,
+                        "clipboard_supported": True,
                     }))
 
                     loop = asyncio.get_event_loop()
 
                     # 默认不传画面，等控制端接入后再传
                     streaming_active = False
+
+                    # 文件传输状态
+                    file_recv = {"fp": None, "name": "", "size": 0, "received": 0}
 
                     async def capture_loop():
                         nonlocal streaming_active
@@ -305,16 +311,43 @@ async def _agent_async_main():
                             except Exception:
                                 break
                             if isinstance(msg, bytes):
+                                # 二进制消息：文件传输数据块
+                                if file_recv["fp"]:
+                                    file_recv["fp"].write(msg)
+                                    file_recv["received"] += len(msg)
+                                    # 发送进度
+                                    pct = int(file_recv["received"] / max(1, file_recv["size"]) * 100)
+                                    await ws.send(json.dumps({
+                                        "type": "file_progress",
+                                        "name": file_recv["name"],
+                                        "received": file_recv["received"],
+                                        "size": file_recv["size"],
+                                        "percent": min(100, pct),
+                                    }))
+                                    if file_recv["received"] >= file_recv["size"]:
+                                        file_recv["fp"].close()
+                                        save_path = file_recv.get("path", "")
+                                        print(f"[文件接收完成] {file_recv['name']} → {save_path}")
+                                        await ws.send(json.dumps({
+                                            "type": "file_done",
+                                            "name": file_recv["name"],
+                                            "path": save_path,
+                                        }))
+                                        file_recv["fp"] = None
+                                        file_recv["name"] = ""
+                                        file_recv["received"] = 0
                                 continue
                             try:
                                 cmd = json.loads(msg)
                                 cmd_type = cmd.get("type")
                                 if cmd_type == "init":
                                     continue
+                                elif cmd_type == "ping":
+                                    await ws.send(json.dumps({"type": "pong", "t": cmd.get("t", 0)}))
+                                    continue
                                 elif cmd_type == "start_streaming":
                                     if not streaming_active:
                                         streaming_active = True
-                                        # 重置增量采集器，发一个关键帧
                                         screen.reset()
                                         state.message = "已连接，正在传输画面"
                                         print(f"[开始传输] 控制端已接入")
@@ -325,6 +358,58 @@ async def _agent_async_main():
                                         state.message = "已连接，等待控制端接入"
                                         print(f"[停止传输] 控制端已断开")
                                     continue
+                                elif cmd_type == "switch_monitor":
+                                    idx = cmd.get("index", 1)
+                                    if screen.switch_monitor(idx):
+                                        w2, h2 = screen.get_size()
+                                        await ws.send(json.dumps({
+                                            "type": "init", "width": w2, "height": h2,
+                                            "fps": config.SCREEN_FPS, "encoding": "delta",
+                                            "hostname": state.hostname,
+                                            "monitors": screen.get_monitors(),
+                                        }))
+                                    continue
+                                elif cmd_type == "set_quality":
+                                    screen.set_quality(int(cmd.get("quality", 55)))
+                                    screen.reset()
+                                    continue
+                                elif cmd_type == "set_fps":
+                                    screen.set_fps(int(cmd.get("fps", 15)))
+                                    continue
+                                elif cmd_type == "get_clipboard":
+                                    result = await loop.run_in_executor(None, inp.execute, cmd)
+                                    if result:
+                                        await ws.send(json.dumps(result))
+                                    continue
+                                elif cmd_type == "file_start":
+                                    # 开始接收文件
+                                    import os
+                                    fname = cmd.get("name", "upload")
+                                    fsize = cmd.get("size", 0)
+                                    save_dir = os.path.join(os.path.expanduser("~"), "Desktop")
+                                    os.makedirs(save_dir, exist_ok=True)
+                                    save_path = os.path.join(save_dir, fname)
+                                    # 避免重名
+                                    base, ext = os.path.splitext(fname)
+                                    counter = 1
+                                    while os.path.exists(save_path):
+                                        save_path = os.path.join(save_dir, f"{base}_{counter}{ext}")
+                                        counter += 1
+                                    file_recv["fp"] = open(save_path, "wb")
+                                    file_recv["name"] = os.path.basename(save_path)
+                                    file_recv["size"] = fsize
+                                    file_recv["received"] = 0
+                                    file_recv["path"] = save_path
+                                    print(f"[文件接收开始] {fname} ({fsize} bytes) → {save_path}")
+                                    continue
+                                elif cmd_type == "file_cancel":
+                                    if file_recv["fp"]:
+                                        file_recv["fp"].close()
+                                        file_recv["fp"] = None
+                                    file_recv["name"] = ""
+                                    file_recv["received"] = 0
+                                    continue
+                                # 普通输入命令
                                 await loop.run_in_executor(None, inp.execute, cmd)
                             except Exception as e:
                                 print(f"[命令错误] {e}")
