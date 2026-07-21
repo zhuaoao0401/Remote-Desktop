@@ -503,8 +503,11 @@ class AudioCapture:
     def start(self):
         """打开音频设备，开始采集。"""
         try:
-            speaker = sc.default_speaker()
-            all_mics = sc.all_microphones(loopback=True)
+            # 尝试 loopback 模式（新版 soundcard），失败则回退普通模式
+            try:
+                all_mics = sc.all_microphones(loopback=True)
+            except TypeError:
+                all_mics = sc.all_microphones()
             if all_mics:
                 self.mic = all_mics[0]
             else:
