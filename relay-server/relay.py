@@ -22,6 +22,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.middleware.cors import CORSMiddleware
 
 from core import SessionManager, authenticate
 import config
@@ -29,6 +30,14 @@ import config
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 app = FastAPI(title="远程桌面 - 中继服务器")
+# 允许跨域（让被控端配置页能直接获取主机列表）
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")),
           name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))

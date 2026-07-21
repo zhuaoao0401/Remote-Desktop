@@ -73,41 +73,120 @@ CONFIG_PAGE_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>被控端配置 - 远程桌面</title>
+<title>远程桌面 - 统一管理</title>
 <link rel="stylesheet" href="/static/style.css">
+<style>
+.tab-bar { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid var(--border); }
+.tab-btn { padding: 12px 24px; font-size: 14px; font-weight: 600; cursor: pointer;
+  border: none; background: none; color: var(--muted); border-bottom: 2px solid transparent;
+  margin-bottom: -2px; transition: all .2s; }
+.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab-btn:hover { color: var(--text); }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+.control-section { margin-top: 16px; }
+.relay-input-group { display: flex; gap: 8px; margin-bottom: 12px; }
+.relay-input-group input { flex: 1; }
+.host-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+.host-card { padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px;
+  cursor: pointer; transition: all .2s; background: var(--surface); }
+.host-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+.host-card .h-name { font-weight: 600; font-size: 14px; }
+.host-card .h-status { font-size: 12px; margin-top: 4px; }
+.host-card .h-status.online { color: var(--green); }
+.host-card .h-status.offline { color: var(--red); }
+.ctrl-iframe { width: 100%; height: 500px; border: 1px solid var(--border);
+  border-radius: 10px; margin-top: 12px; }
+</style>
 </head>
 <body class="login-body">
-<div class="login-card" style="width:460px;">
+<div class="login-card" style="width:560px;">
   <div class="logo">🖥️</div>
-  <h1>被控端配置</h1>
-  <p class="subtitle">设置主机名并连接到中继服务器</p>
-  <form id="cfgForm">
-    <div class="form-group">
-      <label for="hostname">主机名称（控制端会看到此名称）</label>
-      <input type="text" id="hostname" required placeholder="例如：我的办公电脑"
-             value="" maxlength="32">
+  <h1>远程桌面</h1>
+
+  <div class="tab-bar">
+    <button class="tab-btn active" onclick="switchTab('agent')">被控设置</button>
+    <button class="tab-btn" onclick="switchTab('control')">远程控制</button>
+  </div>
+
+  <!-- 被控设置 -->
+  <div id="tab-agent" class="tab-panel active">
+    <p class="subtitle">设置主机名并连接到中继服务器</p>
+    <form id="cfgForm">
+      <div class="form-group">
+        <label for="hostname">主机名称（控制端会看到此名称）</label>
+        <input type="text" id="hostname" required placeholder="例如：我的办公电脑"
+               value="" maxlength="32">
+      </div>
+      <div class="form-group">
+        <label for="relay">中继服务器地址</label>
+        <input type="text" id="relay" required placeholder="ws://1.2.3.4:9090"
+               value="">
+      </div>
+      <div class="form-group">
+        <label for="token">代理令牌</label>
+        <input type="text" id="token" placeholder="留空使用默认令牌"
+               value="">
+      </div>
+      <div id="status-box" class="status-box idle">状态：未启动</div>
+      <button type="submit" id="startBtn" class="btn-primary">启动连接</button>
+      <button type="button" id="stopBtn" class="btn-small"
+              style="width:100%;margin-top:10px;display:none;">停止连接</button>
+    </form>
+  </div>
+
+  <!-- 远程控制 -->
+  <div id="tab-control" class="tab-panel">
+    <p class="subtitle">连接到中继服务器，控制其他电脑</p>
+    <div class="relay-input-group">
+      <input type="text" id="ctrlRelay" placeholder="http://1.2.3.4:9090"
+             value="" id="ctrlRelay">
+      <button class="btn-primary" style="white-space:nowrap;" onclick="loadHosts()">连接</button>
     </div>
-    <div class="form-group">
-      <label for="relay">中继服务器地址</label>
-      <input type="text" id="relay" required placeholder="ws://1.2.3.4:9090"
-             value="">
+    <div id="ctrlLogin" style="display:none;">
+      <div class="form-group">
+        <label for="ctrlUser">用户名</label>
+        <input type="text" id="ctrlUser" value="admin">
+      </div>
+      <div class="form-group">
+        <label for="ctrlPass">密码</label>
+        <input type="password" id="ctrlPass" value="admin123">
+      </div>
+      <button class="btn-primary" onclick="doLogin()">登录</button>
     </div>
-    <div class="form-group">
-      <label for="token">代理令牌</label>
-      <input type="text" id="token" placeholder="留空使用默认令牌"
-             value="">
+    <div id="ctrlHosts" style="display:none;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <span style="font-weight:600;">在线主机</span>
+        <button class="btn-small" onclick="loadHosts()">刷新</button>
+      </div>
+      <div id="hostGrid" class="host-grid"></div>
     </div>
-    <div id="status-box" class="status-box idle">状态：未启动</div>
-    <button type="submit" id="startBtn" class="btn-primary">启动连接</button>
-    <button type="button" id="stopBtn" class="btn-small"
-            style="width:100%;margin-top:10px;display:none;">停止连接</button>
-  </form>
+    <div id="ctrlDesktop" style="display:none;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <span id="desktopTitle" style="font-weight:600;"></span>
+        <button class="btn-small" onclick="backToHosts()">← 返回主机列表</button>
+      </div>
+      <iframe id="desktopFrame" class="ctrl-iframe" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
+    </div>
+  </div>
+
   <p class="hint">配置页地址：http://localhost:8799</p>
 </div>
 <script>
 const $ = id => document.getElementById(id);
 let polling = null;
+let ctrlToken = '';
+let ctrlRelayUrl = '';
 
+// ---- 标签切换 ----
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  event.target.classList.add('active');
+  $('tab-' + name).classList.add('active');
+}
+
+// ---- 被控端状态 ----
 function setStatus(s, msg) {
   const box = $('status-box');
   box.className = 'status-box ' + s;
@@ -156,6 +235,112 @@ $('stopBtn').addEventListener('click', async () => {
 
 refresh();
 polling = setInterval(refresh, 2000);
+
+// ---- 远程控制 ----
+async function loadHosts() {
+  const relayUrl = $('ctrlRelay').value.trim().replace(/\\/$/, '');
+  if (!relayUrl) { alert('请输入中继服务器地址'); return; }
+  ctrlRelayUrl = relayUrl;
+
+  // 检查是否已登录
+  if (ctrlToken) {
+    fetchHosts();
+  } else {
+    // 尝试获取主机列表，如果需要登录则显示登录框
+    try {
+      const r = await fetch(relayUrl + '/api/hosts');
+      const data = await r.json();
+      if (data.hosts !== undefined) {
+        // 无需登录，直接显示
+        showHosts(data.hosts);
+      }
+    } catch(e) {
+      // 可能跨域，显示登录框
+      $('ctrlLogin').style.display = 'block';
+      $('ctrlHosts').style.display = 'none';
+    }
+    // 检查是否需要登录
+    $('ctrlLogin').style.display = 'block';
+  }
+}
+
+async function doLogin() {
+  const user = $('ctrlUser').value.trim();
+  const pass = $('ctrlPass').value.trim();
+  try {
+    const r = await fetch(ctrlRelayUrl + '/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: `username=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}`
+    });
+    const data = await r.json();
+    if (data.ok) {
+      ctrlToken = data.token;
+      $('ctrlLogin').style.display = 'none';
+      fetchHosts();
+    } else {
+      alert(data.error || '登录失败');
+    }
+  } catch(e) {
+    // 跨域问题，用 iframe 方式
+    alert('无法直接连接中继服务器（可能是跨域限制）。\\n将在新窗口中打开控制界面。');
+    window.open(ctrlRelayUrl + '?token=auto', '_blank');
+  }
+}
+
+async function fetchHosts() {
+  try {
+    const r = await fetch(ctrlRelayUrl + '/api/hosts');
+    const data = await r.json();
+    showHosts(data.hosts || []);
+  } catch(e) {
+    // 跨域，改用 iframe 方式
+    $('ctrlHosts').style.display = 'none';
+    $('ctrlDesktop').style.display = 'block';
+    $('desktopTitle').textContent = '远程控制';
+    $('desktopFrame').src = ctrlRelayUrl + '/desktop?token=' + ctrlToken;
+  }
+}
+
+function showHosts(hosts) {
+  $('ctrlLogin').style.display = 'none';
+  $('ctrlDesktop').style.display = 'none';
+  $('ctrlHosts').style.display = 'block';
+  const grid = $('hostGrid');
+  if (hosts.length === 0) {
+    grid.innerHTML = '<p style="color:var(--muted);grid-column:1/-1;">暂无在线主机</p>';
+    return;
+  }
+  grid.innerHTML = hosts.map(h => `
+    <div class="host-card" onclick="openDesktop('${h.desktop_id}', '${h.hostname}')">
+      <div class="h-name">🖥️ ${h.hostname}</div>
+      <div class="h-status ${h.online ? 'online' : 'offline'}">
+        ${h.online ? '● 在线' : '● 离线'} ${h.since || ''}
+      </div>
+    </div>
+  `).join('');
+}
+
+function openDesktop(desktopId, hostname) {
+  $('ctrlHosts').style.display = 'none';
+  $('ctrlDesktop').style.display = 'block';
+  $('desktopTitle').textContent = '🖥️ ' + hostname;
+  const did = encodeURIComponent(desktopId);
+  $('desktopFrame').src = ctrlRelayUrl + '/desktop?token=' + ctrlToken + '&desktop_id=' + did;
+}
+
+function backToHosts() {
+  $('ctrlDesktop').style.display = 'none';
+  $('ctrlHosts').style.display = 'block';
+  $('desktopFrame').src = '';
+}
+
+// 自动填充被控端的中继地址到控制端
+$('ctrlRelay').addEventListener('focus', function() {
+  if (!this.value && $('relay').value) {
+    this.value = $('relay').value.replace('ws://', 'http://').replace('wss://', 'https://');
+  }
+});
 </script>
 </body>
 </html>"""
