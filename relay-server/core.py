@@ -133,6 +133,12 @@ class DeltaScreenCapture:
         # 上一帧完整图像（用于切片对比，可选）
         self._prev_img = None
 
+    def reset(self):
+        """重置增量状态，下一次采集将发送关键帧。"""
+        self._prev_luma = None
+        self._prev_img = None
+        self.last_keyframe_time = 0.0
+
     def get_size(self):
         """返回缩放后的画面尺寸 (宽, 高)。"""
         return self.dst_w, self.dst_h

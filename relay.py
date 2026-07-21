@@ -224,6 +224,14 @@ async def client_endpoint(ws: WebSocket):
     await ws.accept()
     clients[desktop_id].add(ws)
 
+    # 有客户端接入，通知 agent 开始传画面
+    agent = agents.get(desktop_id)
+    if agent:
+        try:
+            await agent.send_text(json.dumps({"type": "start_streaming"}))
+        except Exception:
+            pass
+
     # 先发送缓存的 init 信息（分辨率）
     init = agent_inits.get(desktop_id)
     if init:
@@ -263,6 +271,14 @@ async def client_endpoint(ws: WebSocket):
         print(f"[客户端错误] {e}")
     finally:
         clients[desktop_id].discard(ws)
+        # 所有客户端都断开了，通知 agent 停止传画面
+        if not clients.get(desktop_id):
+            agent = agents.get(desktop_id)
+            if agent:
+                try:
+                    await agent.send_text(json.dumps({"type": "stop_streaming"}))
+                except Exception:
+                    pass
 
 
 if __name__ == "__main__":
