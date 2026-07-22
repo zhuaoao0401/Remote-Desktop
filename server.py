@@ -135,6 +135,8 @@ async def websocket_endpoint(ws: WebSocket):
     }))
 
     capture_task = None
+    audio_task = None
+    heartbeat_task = None
     file_fp = None
     file_name = ""
     file_size = 0
@@ -238,18 +240,26 @@ async def websocket_endpoint(ws: WebSocket):
                             import os
                             fname = cmd.get("name", "upload")
                             fsize = cmd.get("size", 0)
+                            offset = cmd.get("offset", 0)
                             save_dir = os.path.join(os.path.expanduser("~"), "Desktop")
                             os.makedirs(save_dir, exist_ok=True)
                             save_path = os.path.join(save_dir, fname)
-                            base, ext = os.path.splitext(fname)
-                            counter = 1
-                            while os.path.exists(save_path):
-                                save_path = os.path.join(save_dir, f"{base}_{counter}{ext}")
-                                counter += 1
-                            file_fp = open(save_path, "wb")
+                            # 如果有 offset，尝试续传
+                            if offset > 0 and os.path.exists(save_path) and os.path.getsize(save_path) >= offset:
+                                file_fp = open(save_path, "ab")
+                                file_received = offset
+                                print(f"[文件续传] {fname} 从 {offset} 字节继续")
+                            else:
+                                # 避免重名
+                                base, ext = os.path.splitext(fname)
+                                counter = 1
+                                while os.path.exists(save_path):
+                                    save_path = os.path.join(save_dir, f"{base}_{counter}{ext}")
+                                    counter += 1
+                                file_fp = open(save_path, "wb")
+                                file_received = 0
                             file_name = os.path.basename(save_path)
                             file_size = fsize
-                            file_received = 0
                             file_path = save_path
                             print(f"[文件接收开始] {fname} → {save_path}")
                             continue
@@ -262,8 +272,18 @@ async def websocket_endpoint(ws: WebSocket):
                     except Exception as e:
                         print(f"[命令错误] {e}")
 
+        async def heartbeat_loop():
+            """定时发送心跳，防止连接超时断开。"""
+            while True:
+                await asyncio.sleep(15)
+                try:
+                    await ws.send_text(json.dumps({"type": "heartbeat"}))
+                except Exception:
+                    break
+
         capture_task = asyncio.create_task(capture_loop())
         audio_task = asyncio.create_task(audio_loop())
+        heartbeat_task = asyncio.create_task(heartbeat_loop())
         await command_loop()
     except WebSocketDisconnect:
         pass
@@ -274,6 +294,8 @@ async def websocket_endpoint(ws: WebSocket):
             capture_task.cancel()
         if audio_task and not audio_task.done():
             audio_task.cancel()
+        if heartbeat_task and not heartbeat_task.done():
+            heartbeat_task.cancel()
         if audio_obj:
             audio_obj.stop()
         try:
@@ -286,13 +308,22 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="远程桌面 - 直连模式服务器")
     parser.add_argument("--host", default=config.DIRECT_HOST)
     parser.add_argument("--port", type=int, default=config.DIRECT_PORT)
+    parser.add_argument("--ssl-cert", default="", help="SSL 证书路径 (pem)")
+    parser.add_argument("--ssl-key", default="", help="SSL 私钥路径 (pem)")
     args = parser.parse_args()
+    ssl_kwargs = {}
+    if args.ssl_cert and args.ssl_key:
+        ssl_kwargs["ssl_certfile"] = args.ssl_cert
+        ssl_kwargs["ssl_keyfile"] = args.ssl_key
+        proto = "https"
+    else:
+        proto = "http"
     print("=" * 56)
     print("  远程桌面控制 - 直连模式")
     print("=" * 56)
-    print(f"  访问地址 : http://127.0.0.1:{args.port}")
-    print(f"  局域网   : http://<本机IP>:{args.port}")
+    print(f"  访问地址 : {proto}://127.0.0.1:{args.port}")
+    print(f"  局域网   : {proto}://<本机IP>:{args.port}")
     print(f"  默认账号 : admin / admin123")
     print(f"  帧率/质量: {config.SCREEN_FPS}fps / JPEG {config.SCREEN_QUALITY}")
     print("=" * 56)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info", **ssl_kwargs)

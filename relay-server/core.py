@@ -45,6 +45,31 @@ except Exception:
     HAS_SOUNDCARD = False
     np = None
 
+import logging
+from logging.handlers import RotatingFileHandler
+
+
+def setup_logging(log_file='relay.log', max_bytes=2*1024*1024, backup_count=3):
+    """配置日志轮转，防止日志文件无限增长。"""
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    # 清除已有的 handler
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    # 控制台输出
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', '%H:%M:%S'))
+    root_logger.addHandler(console)
+    # 文件输出（轮转）
+    try:
+        file_handler = RotatingFileHandler(log_file, maxBytes=max_bytes, backupCount=backup_count, encoding='utf-8')
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
+        root_logger.addHandler(file_handler)
+    except Exception:
+        pass
+
 
 class ScreenCapture:
     """采集屏幕画面并以 JPEG 字节流返回。"""
@@ -503,8 +528,11 @@ class AudioCapture:
     def start(self):
         """打开音频设备，开始采集。"""
         try:
-            speaker = sc.default_speaker()
-            all_mics = sc.all_microphones(loopback=True)
+            # 尝试 loopback 模式（新版 soundcard），失败则回退普通模式
+            try:
+                all_mics = sc.all_microphones(loopback=True)
+            except TypeError:
+                all_mics = sc.all_microphones()
             if all_mics:
                 self.mic = all_mics[0]
             else:

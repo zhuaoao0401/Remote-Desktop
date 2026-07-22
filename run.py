@@ -222,6 +222,8 @@ def main():
 
     # 第二步：启动服务
     try:
+        from core import setup_logging
+        setup_logging()
         start_services(port=args.port, open_browser=not args.no_browser)
     except KeyboardInterrupt:
         print("\n已停止")

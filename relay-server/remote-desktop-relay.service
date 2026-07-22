@@ -1,0 +1,16 @@
+[Unit]
+Description=远程桌面中继服务器
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/usr/local/relay-server
+ExecStart=/usr/local/relay-server/venv/bin/python relay.py --host 0.0.0.0 --port 9090
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/relay-server.log
+StandardError=append:/var/log/relay-server.log
+
+[Install]
+WantedBy=multi-user.target

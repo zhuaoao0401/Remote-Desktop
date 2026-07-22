@@ -12,6 +12,20 @@
   --yellow: #fbbf24;
   --border: #2d3142;
 }
+/* 亮色主题 */
+:root.light {
+  --bg: #f5f6fa;
+  --surface: #ffffff;
+  --surface2: #e8eaf0;
+  --accent: #4f7cff;
+  --accent2: #7c3aed;
+  --text: #1a1d29;
+  --muted: #6b7280;
+  --green: #16a34a;
+  --red: #dc2626;
+  --yellow: #d97706;
+  --border: #d1d5db;
+}
 html, body { height: 100%; }
 body {
   font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;

@@ -66,6 +66,14 @@ class AgentState:
                     self.relay_url = cfg['relay_url']
                 if cfg.get('token'):
                     self.token = cfg['token']
+                # 加载持久化密码
+                pass_file = os.path.join(os.path.expanduser("~"), ".remote_desktop_password.json")
+                if os.path.exists(pass_file):
+                    import json as _json
+                    with open(pass_file, 'r', encoding='utf-8') as pf:
+                        pass_cfg = _json.load(pf)
+                    if pass_cfg.get("admin"):
+                        config.USERS["admin"] = pass_cfg["admin"]
         except Exception:
             pass
 
@@ -172,6 +180,15 @@ CONFIG_PAGE_HTML = """<!DOCTYPE html>
         <input type="checkbox" id="autostartChk" onchange="toggleAutostart()">
         开机自动启动（Windows 注册表）
       </label>
+      <hr style="border:none;border-top:1px solid var(--border);margin:12px 0;">
+      <details style="font-size:13px;">
+        <summary style="cursor:pointer;color:var(--muted);">修改登录密码</summary>
+        <div style="margin-top:8px;">
+          <input type="password" id="oldPass" placeholder="旧密码" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);margin-bottom:6px;">
+          <input type="password" id="newPass" placeholder="新密码（至少4位）" style="width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);margin-bottom:6px;">
+          <button type="button" class="btn-small" style="width:100%;" onclick="changePassword()">修改密码</button>
+        </div>
+      </details>
     </form>
   </div>
 
@@ -319,6 +336,23 @@ async function toggleAutostart() {
   } catch(e) {}
 }
 checkAutostart();
+
+// ---- 修改密码 ----
+async function changePassword() {
+  const oldP = $('oldPass').value;
+  const newP = $('newPass').value;
+  if (!newP || newP.length < 4) { alert('新密码至少4位'); return; }
+  try {
+    const r = await fetch('/api/change_password', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({old_password: oldP, new_password: newP})
+    });
+    const d = await r.json();
+    if (d.ok) { alert('密码修改成功'); $('oldPass').value=''; $('newPass').value=''; }
+    else { alert(d.error || '修改失败'); }
+  } catch(e) { alert('网络错误'); }
+}
 
 // ---- 远程控制 ----
 function getConnMode() {
@@ -601,6 +635,34 @@ async def toggle_autostart(request: Request):
     return JSONResponse({"ok": ok, "message": msg, "enabled": is_autostart_enabled()})
 
 
+# ---------------------------------------------------------------------------
+# 密码修改
+# ---------------------------------------------------------------------------
+@app.post("/api/change_password")
+async def change_password(request: Request):
+    body = await request.json()
+    old_pass = body.get("old_password", "")
+    new_pass = body.get("new_password", "")
+    if not new_pass or len(new_pass) < 4:
+        return JSONResponse({"ok": False, "error": "新密码至少4个字符"}, status_code=400)
+    # 验证旧密码
+    from config import USERS, hash_password
+    import config as cfg
+    if not cfg.verify_password(old_pass, USERS.get("admin", "")):
+        return JSONResponse({"ok": False, "error": "旧密码错误"}, status_code=401)
+    # 更新内存中的密码
+    USERS["admin"] = hash_password(new_pass)
+    # 保存到配置文件
+    import json
+    pass_file = os.path.join(os.path.expanduser("~"), ".remote_desktop_password.json")
+    try:
+        with open(pass_file, 'w', encoding='utf-8') as f:
+            json.dump({"admin": USERS["admin"]}, f)
+    except Exception:
+        pass
+    return JSONResponse({"ok": True, "message": "密码修改成功"})
+
+
 # ===========================================================================
 # Agent 连接逻辑
 # ===========================================================================
@@ -635,6 +697,7 @@ async def _agent_async_main():
         did = urllib.parse.quote(state.desktop_id, safe='')
         url = f"{state.relay_url}/ws/agent?token={state.token}&desktop_id={did}&hostname={urllib.parse.quote(state.hostname, safe='')}"
 
+        retry_delay = 2
         while True:
             if state._stop_flag:
                 break
@@ -646,6 +709,7 @@ async def _agent_async_main():
                                               open_timeout=15) as ws:
                     state._ws = ws
                     state.status = "connected"
+                    retry_delay = 2
                     state.message = "已连接，等待控制端接入"
                     state.last_connected = time.strftime("%Y-%m-%d %H:%M:%S")
                     print(f"[已连接] 主机={state.hostname} 中继={state.relay_url}")
@@ -799,23 +863,29 @@ async def _agent_async_main():
                                         await ws.send(json.dumps(result))
                                     continue
                                 elif cmd_type == "file_start":
-                                    # 开始接收文件
                                     import os
                                     fname = cmd.get("name", "upload")
                                     fsize = cmd.get("size", 0)
+                                    offset = cmd.get("offset", 0)
                                     save_dir = os.path.join(os.path.expanduser("~"), "Desktop")
                                     os.makedirs(save_dir, exist_ok=True)
                                     save_path = os.path.join(save_dir, fname)
-                                    # 避免重名
-                                    base, ext = os.path.splitext(fname)
-                                    counter = 1
-                                    while os.path.exists(save_path):
-                                        save_path = os.path.join(save_dir, f"{base}_{counter}{ext}")
-                                        counter += 1
-                                    file_recv["fp"] = open(save_path, "wb")
+                                    # 如果有 offset，尝试续传
+                                    if offset > 0 and os.path.exists(save_path) and os.path.getsize(save_path) >= offset:
+                                        file_recv["fp"] = open(save_path, "ab")
+                                        file_recv["received"] = offset
+                                        print(f"[文件续传] {fname} 从 {offset} 字节继续")
+                                    else:
+                                        # 避免重名
+                                        base, ext = os.path.splitext(fname)
+                                        counter = 1
+                                        while os.path.exists(save_path):
+                                            save_path = os.path.join(save_dir, f"{base}_{counter}{ext}")
+                                            counter += 1
+                                        file_recv["fp"] = open(save_path, "wb")
+                                        file_recv["received"] = 0
                                     file_recv["name"] = os.path.basename(save_path)
                                     file_recv["size"] = fsize
-                                    file_recv["received"] = 0
                                     file_recv["path"] = save_path
                                     print(f"[文件接收开始] {fname} ({fsize} bytes) → {save_path}")
                                     continue
@@ -831,23 +901,33 @@ async def _agent_async_main():
                             except Exception as e:
                                 print(f"[命令错误] {e}")
 
-                    await asyncio.gather(capture_loop(), audio_loop(), command_loop())
+                    async def heartbeat_loop():
+                        """定时发送心跳，防止连接超时断开。"""
+                        while True:
+                            await asyncio.sleep(15)
+                            try:
+                                await ws.send(json.dumps({"type": "heartbeat"}))
+                            except Exception:
+                                break
+
+                    await asyncio.gather(capture_loop(), audio_loop(), command_loop(), heartbeat_loop())
             except asyncio.CancelledError:
                 raise
             except (websockets.exceptions.ConnectionClosed,
                     ConnectionRefusedError, OSError) as e:
                 state.status = "connecting"
-                state.message = f"连接断开，5秒后重连: {e}"
-                print(f"[连接断开] {e}  5秒后重连...")
+                state.message = f"连接断开，{retry_delay}秒后重连: {e}"
+                print(f"[连接断开] {e}  {retry_delay}秒后重连...")
             except Exception as e:
                 state.status = "connecting"
-                state.message = f"异常，5秒后重连: {e}"
-                print(f"[异常] {e}  5秒后重连...")
-            # 等待重连，但每秒检查停止标志
-            for _ in range(5):
+                state.message = f"异常，{retry_delay}秒后重连: {e}"
+                print(f"[异常] {e}  {retry_delay}秒后重连...")
+            # 指数退避等待重连
+            for _ in range(retry_delay):
                 if state._stop_flag:
                     break
                 await asyncio.sleep(1)
+            retry_delay = min(retry_delay * 2, 30)
     finally:
         state.status = "idle"
         state.message = "已停止"

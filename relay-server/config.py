@@ -47,7 +47,19 @@ def _load_users() -> dict:
                 users[u.strip()] = hash_password(p.strip())
         return users
     # 默认账号: admin / admin123
-    return {'admin': hash_password('admin123')}
+    users = {'admin': hash_password('admin123')}
+    # 加载持久化密码（优先于默认密码）
+    pass_file = os.path.join(os.path.expanduser("~"), ".remote_desktop_password.json")
+    if os.path.exists(pass_file):
+        try:
+            import json
+            with open(pass_file, 'r', encoding='utf-8') as f:
+                pass_cfg = json.load(f)
+            for user, hashed in pass_cfg.items():
+                users[user] = hashed
+        except Exception:
+            pass
+    return users
 
 
 USERS = _load_users()

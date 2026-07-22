@@ -1,0 +1,12 @@
+version: '3.8'
+services:
+  relay:
+    build: .
+    container_name: remote-desktop-relay
+    ports:
+      - "9090:9090"
+    restart: always
+    volumes:
+      - ./data:/app/data
+    environment:
+      - RD_RELAY_PORT=9090

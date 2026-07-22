@@ -18,10 +18,44 @@ import shutil
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+def sync_relay_server():
+    """同步根目录文件到 relay-server 目录。"""
+    relay_dir = os.path.join(BASE_DIR, "relay-server")
+    if not os.path.isdir(relay_dir):
+        return
+    files = ["core.py", "config.py", "agent.py", "server.py", "relay.py",
+             "requirements.txt"]
+    for f in files:
+        src = os.path.join(BASE_DIR, f)
+        dst = os.path.join(relay_dir, f)
+        if os.path.exists(src):
+            with open(src, 'r', encoding='utf-8') as fp:
+                content = fp.read()
+            with open(dst, 'w', encoding='utf-8') as fp:
+                fp.write(content)
+    # 同步 templates 和 static
+    for subdir in ["templates", "static"]:
+        src_dir = os.path.join(BASE_DIR, subdir)
+        dst_dir = os.path.join(relay_dir, subdir)
+        if os.path.isdir(src_dir):
+            os.makedirs(dst_dir, exist_ok=True)
+            for item in os.listdir(src_dir):
+                src_file = os.path.join(src_dir, item)
+                dst_file = os.path.join(dst_dir, item)
+                if os.path.isfile(src_file):
+                    with open(src_file, 'r', encoding='utf-8') as fp:
+                        content = fp.read()
+                    with open(dst_file, 'w', encoding='utf-8') as fp:
+                        fp.write(content)
+    print("[0/4] relay-server 目录已同步")
+
 def main():
     print("=" * 56)
     print("  远程桌面 - 打包工具")
     print("=" * 56)
+
+    # 同步 relay-server 目录
+    sync_relay_server()
 
     # 检查 pyinstaller
     try:

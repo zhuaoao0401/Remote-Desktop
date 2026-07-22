@@ -148,6 +148,7 @@
       } else if (msg.type === 'clipboard_data') {
         // 收到被控端剪贴板内容，写入本地剪贴板
         if (msg.text) {
+          lastClipboardText = msg.text;
           try { await navigator.clipboard.writeText(msg.text); } catch (_) {}
         }
       } else if (msg.type === 'file_progress') {
@@ -400,6 +401,9 @@
   });
 
   // ---------- 剪贴板同步 ----------
+  let lastClipboardText = '';
+  let clipboardSyncEnabled = true;
+
   document.getElementById('clipboardBtn').addEventListener('click', async () => {
     // 先获取被控端剪贴板 → 写入本地
     sendCmd({ type: 'get_clipboard' });
@@ -407,16 +411,28 @@
     setTimeout(async () => {
       try {
         const text = await navigator.clipboard.readText();
-        if (text) sendCmd({ type: 'set_clipboard', text: text });
+        if (text) { lastClipboardText = text; sendCmd({ type: 'set_clipboard', text: text }); }
       } catch (_) {}
     }, 500);
   });
+
+  // 剪贴板自动同步：定时检测本地剪贴板变化
+  setInterval(async () => {
+    if (!connected || !clipboardSyncEnabled) return;
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text && text !== lastClipboardText) {
+        lastClipboardText = text;
+        sendCmd({ type: 'set_clipboard', text: text });
+      }
+    } catch (_) {}
+  }, 2000);
 
   // Ctrl+C / Ctrl+V 时自动同步
   document.addEventListener('copy', () => {
     try {
       navigator.clipboard.readText().then(text => {
-        if (text) sendCmd({ type: 'set_clipboard', text: text });
+        if (text) { lastClipboardText = text; sendCmd({ type: 'set_clipboard', text: text }); }
       }).catch(() => {});
     } catch (_) {}
   });
@@ -463,7 +479,6 @@
 
     // 通知 agent 开始接收
     sendCmd({ type: 'file_start', name: file.name, size: file.size });
-
     let offset = 0;
     while (offset < file.size) {
       const slice = file.slice(offset, offset + CHUNK_SIZE);
@@ -581,6 +596,20 @@
   document.getElementById('reconnectBtn').addEventListener('click', () => {
     if (ws) { try { ws.close(); } catch (_) {} }
     connect();
+  });
+
+  // ---------- 主题切换 ----------
+  const themeBtn = document.getElementById('themeBtn');
+  // 从 localStorage 恢复主题
+  if (localStorage.getItem('rd_theme') === 'light') {
+    document.documentElement.classList.add('light');
+    themeBtn.textContent = '☀️';
+  }
+  themeBtn.addEventListener('click', () => {
+    document.documentElement.classList.toggle('light');
+    const isLight = document.documentElement.classList.contains('light');
+    themeBtn.textContent = isLight ? '☀️' : '🌙';
+    localStorage.setItem('rd_theme', isLight ? 'light' : 'dark');
   });
   document.getElementById('fullscreenBtn').addEventListener('click', () => {
     if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});

@@ -302,16 +302,27 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="远程桌面 - 中继服务器")
     parser.add_argument("--host", default=config.RELAY_HOST)
     parser.add_argument("--port", type=int, default=config.RELAY_PORT)
+    parser.add_argument("--ssl-cert", default="", help="SSL 证书路径 (pem)")
+    parser.add_argument("--ssl-key", default="", help="SSL 私钥路径 (pem)")
     args = parser.parse_args()
+    ssl_kwargs = {}
+    if args.ssl_cert and args.ssl_key:
+        ssl_kwargs["ssl_certfile"] = args.ssl_cert
+        ssl_kwargs["ssl_keyfile"] = args.ssl_key
+        proto = "https"
+        ws_proto = "wss"
+    else:
+        proto = "http"
+        ws_proto = "ws"
     print("=" * 56)
     print("  远程桌面控制 - 中继服务器")
     print("=" * 56)
-    print(f"  Web 访问 : http://127.0.0.1:{args.port}")
-    print(f"  公网访问 : http://<服务器公网IP>:{args.port}")
+    print(f"  Web 访问 : {proto}://127.0.0.1:{args.port}")
+    print(f"  公网访问 : {proto}://<服务器公网IP>:{args.port}")
     print(f"  默认账号 : admin / admin123")
     print(f"  代理令牌 : {config.AGENT_TOKEN}")
     print("-" * 56)
     print("  在被控电脑运行:")
-    print(f"  python agent.py --relay ws://<服务器IP>:{args.port}")
+    print(f"  python agent.py --relay {ws_proto}://<服务器IP>:{args.port}")
     print("=" * 56)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info", **ssl_kwargs)
