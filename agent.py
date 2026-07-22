@@ -206,19 +206,6 @@ CONFIG_PAGE_HTML = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- 中继登录 -->
-    <div id="ctrlLogin" style="display:none;">
-      <div class="form-group">
-        <label for="ctrlUser">用户名</label>
-        <input type="text" id="ctrlUser" value="admin">
-      </div>
-      <div class="form-group">
-        <label for="ctrlPass">密码</label>
-        <input type="password" id="ctrlPass" value="admin123">
-      </div>
-      <button class="btn-primary" onclick="doRelayLogin()">登录中继服务器</button>
-    </div>
-
     <!-- 主机列表 -->
     <div id="ctrlHosts">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
@@ -344,15 +331,21 @@ async function loadHostList() {
   relayBaseUrl = relayUrl;
   $('hostGrid').innerHTML = '<p style="color:var(--muted);text-align:center;padding:20px;">加载中...</p>';
 
-  // 通过本地服务器代理请求，避免跨域
+  // 先自动登录获取 token
+  try {
+    const lr = await fetch('/api/relay_login', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({relay_url: relayUrl})
+    });
+    const ldata = await lr.json();
+    if (ldata.ok) { relayToken = ldata.token; }
+  } catch(e) {}
+
+  // 通过本地服务器代理请求主机列表
   try {
     const r = await fetch('/api/relay_hosts?relay_url=' + encodeURIComponent(relayUrl));
     const data = await r.json();
-    if (data.need_login) {
-      $('ctrlLogin').style.display = 'block';
-      $('hostGrid').innerHTML = '<p style="color:var(--muted);text-align:center;padding:20px;">请先登录中继服务器</p>';
-      return;
-    }
     if (data.error) {
       $('hostGrid').innerHTML = '<p style="color:var(--red);text-align:center;padding:20px;">' + data.error + '</p>';
       return;
@@ -380,29 +373,6 @@ async function loadHostList() {
     }).join('');
   } catch(e) {
     $('hostGrid').innerHTML = '<p style="color:var(--red);text-align:center;padding:20px;">连接失败: ' + e.message + '</p>';
-  }
-}
-
-async function doRelayLogin() {
-  const relayUrl = $('ctrlRelay').value.trim().replace(/\/$/, '');
-  const user = $('ctrlUser').value.trim() || 'admin';
-  const pass = $('ctrlPass').value.trim() || 'admin123';
-  try {
-    const r = await fetch('/api/relay_login', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({relay_url: relayUrl, username: user, password: pass})
-    });
-    const data = await r.json();
-    if (data.ok) {
-      relayToken = data.token;
-      $('ctrlLogin').style.display = 'none';
-      loadHostList();
-    } else {
-      alert(data.error || '登录失败');
-    }
-  } catch(e) {
-    alert('连接失败: ' + e.message);
   }
 }
 

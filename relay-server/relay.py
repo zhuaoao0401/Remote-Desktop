@@ -61,44 +61,32 @@ agent_online_since: dict = {}
 # ---------------------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
-async def login_page(request: Request):
+async def root_redirect(request: Request):
+    """自动登录，跳转到主机列表页。"""
     token = request.cookies.get("rd_token") or request.query_params.get("token")
-    if token and sessions.valid(token):
-        return RedirectResponse(url=f"/hosts?token={token}", status_code=302)
-    return templates.TemplateResponse(request, "login.html")
+    if not token or not sessions.valid(token):
+        token = sessions.create("admin")
+    resp = RedirectResponse(url=f"/hosts?token={token}", status_code=302)
+    resp.set_cookie("rd_token", token, httponly=True, max_age=config.SESSION_EXPIRY)
+    return resp
 
 
 @app.post("/login")
 async def login(request: Request):
-    client_ip = request.client.host if request.client else "unknown"
-    if not sessions.check_rate_limit(client_ip):
-        remaining = sessions.get_remaining_lock(client_ip)
-        return JSONResponse({"ok": False,
-                             "error": f"登录失败次数过多，请 {remaining} 秒后再试"},
-                            status_code=429)
-    form = await request.form()
-    username = form.get("username", "")
-    password = form.get("password", "")
-    if authenticate(username, password):
-        sessions.record_success(client_ip)
-        token = sessions.create(username)
-        resp = JSONResponse({"ok": True, "token": token,
-                             "redirect": f"/hosts?token={token}"})
-        resp.set_cookie("rd_token", token, httponly=True,
-                        max_age=config.SESSION_EXPIRY)
-        return resp
-    sessions.record_failed_attempt(client_ip)
-    return JSONResponse({"ok": False, "error": "用户名或密码错误"}, status_code=401)
+    """兼容旧接口，直接返回 token。"""
+    token = sessions.create("admin")
+    resp = JSONResponse({"ok": True, "token": token, "redirect": f"/hosts?token={token}"})
+    resp.set_cookie("rd_token", token, httponly=True, max_age=config.SESSION_EXPIRY)
+    return resp
 
 
 @app.get("/logout")
 async def logout(request: Request):
+    """退出：重新创建 token 并跳回主机列表。"""
     token = request.cookies.get("rd_token") or request.query_params.get("token")
     if token:
         sessions.destroy(token)
-    resp = RedirectResponse(url="/", status_code=302)
-    resp.delete_cookie("rd_token")
-    return resp
+    return RedirectResponse(url="/", status_code=302)
 
 
 @app.get("/hosts", response_class=HTMLResponse)
@@ -106,9 +94,9 @@ async def hosts_page(request: Request):
     """主机选择页：列出所有在线主机，选择后进入控制台。"""
     token = request.query_params.get("token") or request.cookies.get("rd_token")
     if not token or not sessions.valid(token):
-        return RedirectResponse(url="/", status_code=302)
+        token = sessions.create("admin")
     return templates.TemplateResponse(request, "hosts.html", {
-        "username": sessions.username(token),
+        "username": "admin",
         "token": token,
     })
 
@@ -117,7 +105,7 @@ async def hosts_page(request: Request):
 async def desktop_page(request: Request):
     token = request.query_params.get("token") or request.cookies.get("rd_token")
     if not token or not sessions.valid(token):
-        return RedirectResponse(url="/", status_code=302)
+        token = sessions.create("admin")
     desktop_id = request.query_params.get("desktop_id", "")
     return templates.TemplateResponse(request, "desktop.html", {
         "username": sessions.username(token),

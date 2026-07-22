@@ -245,12 +245,9 @@ def start_services(port=8799, open_browser=True):
         from agent import CONFIG_PAGE_HTML
         return HTMLResponse(CONFIG_PAGE_HTML)
 
-    # 主页重定向：已登录去 /desktop，未登录去 /config
+    # 主页重定向：直接去配置页
     @server_app.get("/", response_class=HTMLResponse)
     async def root_page(request: Request):
-        token = request.cookies.get("rd_token") or request.query_params.get("token")
-        if token and sessions.valid(token):
-            return RedirectResponse(url=f"/desktop?token={token}", status_code=302)
         return RedirectResponse(url="/config", status_code=302)
 
     # 打印启动信息
