@@ -55,13 +55,8 @@ def get_components():
 
 @app.get("/", response_class=HTMLResponse)
 async def root_redirect(request: Request):
-    """自动登录，跳转到桌面控制页。"""
-    token = request.cookies.get("rd_token") or request.query_params.get("token")
-    if not token or not sessions.valid(token):
-        token = sessions.create("admin")
-    resp = RedirectResponse(url=f"/desktop?token={token}", status_code=302)
-    resp.set_cookie("rd_token", token, httponly=True, max_age=config.SESSION_EXPIRY)
-    return resp
+    """跳转到配置页，让用户自己选择连接哪个主机。"""
+    return RedirectResponse(url="/config", status_code=302)
 
 
 @app.post("/login")

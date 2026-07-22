@@ -245,11 +245,6 @@ def start_services(port=8799, open_browser=True):
         from agent import CONFIG_PAGE_HTML
         return HTMLResponse(CONFIG_PAGE_HTML)
 
-    # 主页重定向：直接去配置页
-    @server_app.get("/", response_class=HTMLResponse)
-    async def root_page(request: Request):
-        return RedirectResponse(url="/config", status_code=302)
-
     # 打印启动信息
     print()
     print("=" * 56)
