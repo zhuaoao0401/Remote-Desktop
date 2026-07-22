@@ -165,7 +165,7 @@ CONFIG_PAGE_HTML = """<!DOCTYPE html>
       <div class="form-group">
       <label for="relay">中继服务器地址</label>
       <input type="text" id="relay" placeholder="ws://43.163.239.11:9090"
-             value="ws://43.163.239.11:9090">
+             value="ws://43.163.239.11:9090" oninput="saveAgentRelay()">
     </div>
       <div class="form-group">
         <label for="token">代理令牌</label>
@@ -201,7 +201,7 @@ CONFIG_PAGE_HTML = """<!DOCTYPE html>
       <label for="ctrlRelay">中继服务器地址</label>
       <div class="relay-input-group">
         <input type="text" id="ctrlRelay" placeholder="http://43.163.239.11:9090"
-               value="http://43.163.239.11:9090">
+               value="http://43.163.239.11:9090" oninput="saveRelayAddr()">
         <button class="btn-primary" style="white-space:nowrap;" onclick="loadHostList()">刷新主机</button>
       </div>
     </div>
@@ -253,6 +253,16 @@ async function refresh() {
     $('stopBtn').style.display = running ? 'block' : 'none';
   } catch(e) {}
 }
+
+function saveAgentRelay() {
+  localStorage.setItem('rd_agent_relay', $('relay').value.trim());
+}
+
+// 从 localStorage 恢复被控端中继地址
+(function() {
+  const saved = localStorage.getItem('rd_agent_relay');
+  if (saved) $('relay').value = saved;
+})();
 
 $('cfgForm').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -325,6 +335,16 @@ async function changePassword() {
 let relayToken = '';
 let relayBaseUrl = '';
 
+// 从 localStorage 恢复中继地址
+(function() {
+  const saved = localStorage.getItem('rd_relay_addr');
+  if (saved) $('ctrlRelay').value = saved;
+})();
+
+function saveRelayAddr() {
+  localStorage.setItem('rd_relay_addr', $('ctrlRelay').value.trim());
+}
+
 async function loadHostList() {
   const relayUrl = $('ctrlRelay').value.trim().replace(/\/$/, '');
   if (!relayUrl) { alert('请输入中继服务器地址'); return; }
@@ -380,7 +400,11 @@ function connectHost(desktopId, hostname) {
   // 在新窗口中打开控制页面
   const did = encodeURIComponent(desktopId);
   const url = relayBaseUrl + '/desktop?token=' + relayToken + '&desktop_id=' + did;
-  window.open(url, '_blank');
+  const w = window.open(url, '_blank');
+  if (!w) {
+    // 弹窗被拦截，提示用户
+    alert('浏览器拦截了弹窗，请允许弹窗后重试，或复制链接手动打开：\n' + url);
+  }
 }
 
 // 自动填充被控端的中继地址到控制端
