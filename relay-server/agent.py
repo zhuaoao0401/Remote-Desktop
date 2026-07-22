@@ -149,13 +149,13 @@ CONFIG_PAGE_HTML = """<!DOCTYPE html>
   <h1>远程桌面</h1>
 
   <div class="tab-bar">
-    <button class="tab-btn active" onclick="switchTab('agent')">被控设置</button>
-    <button class="tab-btn" onclick="switchTab('control')">远程控制</button>
+    <button class="tab-btn active" onclick="switchTab('agent')">🖥️ 被控端</button>
+    <button class="tab-btn" onclick="switchTab('control')">🎮 控制端</button>
   </div>
 
-  <!-- 被控设置 -->
+  <!-- 被控端 -->
   <div id="tab-agent" class="tab-panel active">
-    <p class="subtitle">设置主机名并连接到中继服务器</p>
+    <p class="subtitle">设置主机名并连接到中继服务器，让其他设备可以远程控制本机</p>
     <form id="cfgForm">
       <div class="form-group">
         <label for="hostname">主机名称（控制端会看到此名称）</label>
@@ -173,9 +173,9 @@ CONFIG_PAGE_HTML = """<!DOCTYPE html>
                value="">
       </div>
       <div id="status-box" class="status-box idle">状态：未启动</div>
-      <button type="submit" id="startBtn" class="btn-primary">启动连接</button>
+      <button type="submit" id="startBtn" class="btn-primary">启动被控</button>
       <button type="button" id="stopBtn" class="btn-small"
-              style="width:100%;margin-top:10px;display:none;">停止连接</button>
+              style="width:100%;margin-top:10px;display:none;">停止被控</button>
       <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;color:var(--muted);">
         <input type="checkbox" id="autostartChk" onchange="toggleAutostart()">
         开机自动启动（Windows 注册表）
@@ -192,38 +192,21 @@ CONFIG_PAGE_HTML = """<!DOCTYPE html>
     </form>
   </div>
 
-  <!-- 远程控制 -->
+  <!-- 控制端 -->
   <div id="tab-control" class="tab-panel">
-    <p class="subtitle">控制本机或远程电脑</p>
+    <p class="subtitle">选择一台在线主机进行远程控制</p>
 
-    <!-- 连接模式选择 -->
+    <!-- 中继服务器地址 + 刷新 -->
     <div class="form-group">
-      <label>连接模式</label>
-      <div style="display:flex;gap:12px;margin-top:4px;">
-        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:14px;">
-          <input type="radio" name="connMode" value="relay" checked onchange="onModeChange()">
-          中继模式
-        </label>
-        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:14px;">
-          <input type="radio" name="connMode" value="direct" onchange="onModeChange()">
-          直连模式
-        </label>
+      <label for="ctrlRelay">中继服务器地址</label>
+      <div class="relay-input-group">
+        <input type="text" id="ctrlRelay" placeholder="http://43.163.239.11:9090"
+               value="http://43.163.239.11:9090">
+        <button class="btn-primary" style="white-space:nowrap;" onclick="loadHostList()">刷新主机</button>
       </div>
-      <p id="modeHint" style="font-size:12px;color:var(--muted);margin-top:4px;">
-        中继模式：通过中继服务器连接，适合远程控制
-      </p>
     </div>
 
-    <button class="btn-primary" style="width:100%;margin-bottom:12px;"
-            onclick="controlLocal()" id="controlLocalBtn">🖥️ 控制本机桌面</button>
-
-    <hr style="border:none;border-top:1px solid var(--border);margin:12px 0;">
-    <p class="subtitle" style="font-size:13px;">或手动连接中继服务器控制远程电脑：</p>
-    <div class="relay-input-group">
-      <input type="text" id="ctrlRelay" placeholder="http://43.163.239.11:9090"
-             value="http://43.163.239.11:9090">
-      <button class="btn-primary" style="white-space:nowrap;" onclick="loadHosts()">连接</button>
-    </div>
+    <!-- 中继登录 -->
     <div id="ctrlLogin" style="display:none;">
       <div class="form-group">
         <label for="ctrlUser">用户名</label>
@@ -233,22 +216,25 @@ CONFIG_PAGE_HTML = """<!DOCTYPE html>
         <label for="ctrlPass">密码</label>
         <input type="password" id="ctrlPass" value="admin123">
       </div>
-      <button class="btn-primary" onclick="doLogin()">登录</button>
+      <button class="btn-primary" onclick="doRelayLogin()">登录中继服务器</button>
     </div>
-    <div id="ctrlHosts" style="display:none;">
+
+    <!-- 主机列表 -->
+    <div id="ctrlHosts">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-        <span style="font-weight:600;">在线主机</span>
-        <button class="btn-small" onclick="loadHosts()">刷新</button>
+        <span style="font-weight:600;font-size:14px;">📡 在线主机 (<span id="hostCount">0</span>)</span>
+        <button class="btn-small" onclick="loadHostList()">🔄 刷新</button>
       </div>
-      <div id="hostGrid" class="host-grid"></div>
-    </div>
-    <div id="ctrlDesktop" style="display:none;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-        <span id="desktopTitle" style="font-weight:600;"></span>
-        <button class="btn-small" onclick="backToHosts()">← 返回主机列表</button>
+      <div id="hostGrid" class="host-grid">
+        <p style="color:var(--muted);text-align:center;padding:20px;">点击上方"刷新主机"查看在线设备</p>
       </div>
-      <iframe id="desktopFrame" class="ctrl-iframe" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
     </div>
+
+    <!-- 直连模式 -->
+    <hr style="border:none;border-top:1px solid var(--border);margin:16px 0;">
+    <p class="subtitle" style="font-size:13px;">或直连控制本机（同一局域网，无需中继）：</p>
+    <button class="btn-primary" style="width:100%;"
+            onclick="location.href='/'">🖥️ 直连控制本机</button>
   </div>
 
   <p class="hint">配置页地址：http://localhost:8799</p>
@@ -354,133 +340,83 @@ async function changePassword() {
   } catch(e) { alert('网络错误'); }
 }
 
-// ---- 远程控制 ----
-function getConnMode() {
-  const checked = document.querySelector('input[name="connMode"]:checked');
-  return checked ? checked.value : 'relay';
-}
+// ---- 控制端：中继主机列表 ----
+let relayToken = '';
+let relayBaseUrl = '';
 
-function onModeChange() {
-  const mode = getConnMode();
-  const hint = $('modeHint');
-  const btn = $('controlLocalBtn');
-  if (mode === 'relay') {
-    hint.textContent = '中继模式：通过中继服务器连接，适合远程控制';
-    btn.textContent = '🖥️ 控制本机桌面（中继）';
-  } else {
-    hint.textContent = '直连模式：直接连接本机，无需中继服务器';
-    btn.textContent = '🖥️ 控制本机桌面（直连）';
-  }
-}
-
-function controlLocal() {
-  const mode = getConnMode();
-  if (mode === 'direct') {
-    // 直连模式：跳转到本机登录页
-    location.href = '/';
-  } else {
-    // 中继模式：跳转到中继服务器控制页面
-    const relayUrl = $('ctrlRelay').value.trim() || 'http://43.163.239.11:9090';
-    window.open(relayUrl + '/', '_blank');
-  }
-}
-
-async function loadHosts() {
-  const relayUrl = $('ctrlRelay').value.trim().replace(/\\/$/, '');
+async function loadHostList() {
+  const relayUrl = $('ctrlRelay').value.trim().replace(/\/$/, '');
   if (!relayUrl) { alert('请输入中继服务器地址'); return; }
-  ctrlRelayUrl = relayUrl;
+  relayBaseUrl = relayUrl;
+  $('hostGrid').innerHTML = '<p style="color:var(--muted);text-align:center;padding:20px;">加载中...</p>';
 
-  // 检查是否已登录
-  if (ctrlToken) {
-    fetchHosts();
-  } else {
-    // 尝试获取主机列表，如果需要登录则显示登录框
-    try {
-      const r = await fetch(relayUrl + '/api/hosts');
-      const data = await r.json();
-      if (data.hosts !== undefined) {
-        // 无需登录，直接显示
-        showHosts(data.hosts);
-      }
-    } catch(e) {
-      // 可能跨域，显示登录框
+  // 通过本地服务器代理请求，避免跨域
+  try {
+    const r = await fetch('/api/relay_hosts?relay_url=' + encodeURIComponent(relayUrl));
+    const data = await r.json();
+    if (data.need_login) {
       $('ctrlLogin').style.display = 'block';
-      $('ctrlHosts').style.display = 'none';
+      $('hostGrid').innerHTML = '<p style="color:var(--muted);text-align:center;padding:20px;">请先登录中继服务器</p>';
+      return;
     }
-    // 检查是否需要登录
-    $('ctrlLogin').style.display = 'block';
+    if (data.error) {
+      $('hostGrid').innerHTML = '<p style="color:var(--red);text-align:center;padding:20px;">' + data.error + '</p>';
+      return;
+    }
+    const hosts = data.hosts || [];
+    $('hostCount').textContent = hosts.length;
+    if (hosts.length === 0) {
+      $('hostGrid').innerHTML = '<p style="color:var(--muted);text-align:center;padding:20px;">暂无在线主机，请先在"被控端"标签中启动被控</p>';
+      return;
+    }
+    $('hostGrid').innerHTML = hosts.map(h => {
+      const statusCls = h.online ? 'online' : 'offline';
+      const statusText = h.online ? '● 在线' : '● 离线';
+      const initial = (h.hostname || '?')[0].toUpperCase();
+      return `<div class="host-card" onclick="connectHost('${h.desktop_id || h.hostname}', '${h.hostname}')">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div class="host-avatar" style="width:36px;height:36px;font-size:16px;border-radius:8px;">${initial}</div>
+          <div style="flex:1;">
+            <div class="h-name">${h.hostname || '未知'}</div>
+            <div class="h-status ${statusCls}">${statusText} ${h.since || ''}</div>
+          </div>
+          <div style="font-size:20px;">${h.online ? '🎮' : '💤'}</div>
+        </div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    $('hostGrid').innerHTML = '<p style="color:var(--red);text-align:center;padding:20px;">连接失败: ' + e.message + '</p>';
   }
 }
 
-async function doLogin() {
-  const user = $('ctrlUser').value.trim();
-  const pass = $('ctrlPass').value.trim();
+async function doRelayLogin() {
+  const relayUrl = $('ctrlRelay').value.trim().replace(/\/$/, '');
+  const user = $('ctrlUser').value.trim() || 'admin';
+  const pass = $('ctrlPass').value.trim() || 'admin123';
   try {
-    const r = await fetch(ctrlRelayUrl + '/login', {
+    const r = await fetch('/api/relay_login', {
       method: 'POST',
-      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-      body: `username=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}`
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({relay_url: relayUrl, username: user, password: pass})
     });
     const data = await r.json();
     if (data.ok) {
-      ctrlToken = data.token;
+      relayToken = data.token;
       $('ctrlLogin').style.display = 'none';
-      fetchHosts();
+      loadHostList();
     } else {
       alert(data.error || '登录失败');
     }
   } catch(e) {
-    // 跨域问题，用 iframe 方式
-    alert('无法直接连接中继服务器（可能是跨域限制）。\\n将在新窗口中打开控制界面。');
-    window.open(ctrlRelayUrl + '?token=auto', '_blank');
+    alert('连接失败: ' + e.message);
   }
 }
 
-async function fetchHosts() {
-  try {
-    const r = await fetch(ctrlRelayUrl + '/api/hosts');
-    const data = await r.json();
-    showHosts(data.hosts || []);
-  } catch(e) {
-    // 跨域，改用 iframe 方式
-    $('ctrlHosts').style.display = 'none';
-    $('ctrlDesktop').style.display = 'block';
-    $('desktopTitle').textContent = '远程控制';
-    $('desktopFrame').src = ctrlRelayUrl + '/desktop?token=' + ctrlToken;
-  }
-}
-
-function showHosts(hosts) {
-  $('ctrlLogin').style.display = 'none';
-  $('ctrlDesktop').style.display = 'none';
-  $('ctrlHosts').style.display = 'block';
-  const grid = $('hostGrid');
-  if (hosts.length === 0) {
-    grid.innerHTML = '<p style="color:var(--muted);grid-column:1/-1;">暂无在线主机</p>';
-    return;
-  }
-  grid.innerHTML = hosts.map(h => `
-    <div class="host-card" onclick="openDesktop('${h.desktop_id}', '${h.hostname}')">
-      <div class="h-name">🖥️ ${h.hostname}</div>
-      <div class="h-status ${h.online ? 'online' : 'offline'}">
-        ${h.online ? '● 在线' : '● 离线'} ${h.since || ''}
-      </div>
-    </div>
-  `).join('');
-}
-
-function openDesktop(desktopId, hostname) {
-  $('ctrlHosts').style.display = 'none';
-  $('ctrlDesktop').style.display = 'block';
-  $('desktopTitle').textContent = '🖥️ ' + hostname;
+function connectHost(desktopId, hostname) {
+  // 在新窗口中打开控制页面
   const did = encodeURIComponent(desktopId);
-  $('desktopFrame').src = ctrlRelayUrl + '/desktop?token=' + ctrlToken + '&desktop_id=' + did;
-}
-
-function backToHosts() {
-  $('ctrlDesktop').style.display = 'none';
-  $('ctrlHosts').style.display = 'block';
-  $('desktopFrame').src = '';
+  const url = relayBaseUrl + '/desktop?token=' + relayToken + '&desktop_id=' + did;
+  window.open(url, '_blank');
 }
 
 // 自动填充被控端的中继地址到控制端
@@ -661,6 +597,64 @@ async def change_password(request: Request):
     except Exception:
         pass
     return JSONResponse({"ok": True, "message": "密码修改成功"})
+
+
+# ---------------------------------------------------------------------------
+# 中继服务器代理接口（避免浏览器跨域问题）
+# ---------------------------------------------------------------------------
+
+# 缓存中继服务器登录 token
+_relay_tokens = {}  # relay_url -> token
+
+@app.post("/api/relay_login")
+async def relay_login(request: Request):
+    """代理登录中继服务器，返回 token。"""
+    import urllib.request
+    body = await request.json()
+    relay_url = body.get("relay_url", "").rstrip("/")
+    username = body.get("username", "admin")
+    password = body.get("password", "admin123")
+    if not relay_url:
+        return JSONResponse({"ok": False, "error": "请输入中继服务器地址"}, status_code=400)
+    try:
+        data = urllib.parse.urlencode({"username": username, "password": password}).encode()
+        req = urllib.request.Request(relay_url + "/login", data=data, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            import json as _json
+            result = _json.loads(resp.read().decode())
+            if result.get("ok") and result.get("token"):
+                _relay_tokens[relay_url] = result["token"]
+                return JSONResponse({"ok": True, "token": result["token"]})
+            return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"连接失败: {e}"}, status_code=500)
+
+@app.get("/api/relay_hosts")
+async def relay_hosts(relay_url: str = "", refresh_login: str = ""):
+    """代理获取中继服务器的主机列表。"""
+    import urllib.request
+    relay_url = relay_url.rstrip("/")
+    if not relay_url:
+        # 用配置中的默认地址
+        relay_url = state.relay_url.replace("ws://", "http://").replace("wss://", "https://")
+    if not relay_url:
+        return JSONResponse({"ok": False, "error": "未配置中继服务器地址"}, status_code=400)
+    token = _relay_tokens.get(relay_url, "")
+    try:
+        url = relay_url + "/api/hosts"
+        if token:
+            url += f"?token={token}"
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            import json as _json
+            result = _json.loads(resp.read().decode())
+            return JSONResponse(result)
+    except urllib.error.HTTPError as e:
+        if e.code == 401 or e.code == 403:
+            return JSONResponse({"ok": False, "error": "需要登录", "need_login": True})
+        return JSONResponse({"ok": False, "error": f"服务器错误: {e.code}"}, status_code=500)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"连接失败: {e}"}, status_code=500)
 
 
 # ===========================================================================

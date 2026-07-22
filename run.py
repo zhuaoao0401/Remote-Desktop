@@ -119,12 +119,10 @@ def start_services(port=8799, open_browser=True):
     async def api_start(request: Request):
         body = await request.json()
         hostname = (body.get("hostname") or "").strip()
-        relay = (body.get("relay") or "").strip()
+        relay = (body.get("relay") or "").strip() or _ag.AgentState.DEFAULT_RELAY_URL
         token = (body.get("token") or "").strip()
         if not hostname:
             return JSONResponse({"ok": False, "error": "请输入主机名"}, status_code=400)
-        if not relay:
-            return JSONResponse({"ok": False, "error": "请输入中继地址"}, status_code=400)
         if state._thread is not None:
             return JSONResponse({"ok": False, "error": "已在运行，请先停止"}, status_code=400)
 
@@ -157,6 +155,89 @@ def start_services(port=8799, open_browser=True):
         state.message = "已停止"
         state._ws = None
         return JSONResponse({"ok": True})
+
+    # 注册 agent 的其他 API 路由到 server_app
+    import agent as _ag
+
+    @server_app.get("/api/autostart")
+    async def _ag_autostart_get():
+        return _ag.is_autostart_enabled() and JSONResponse({"enabled": _ag.is_autostart_enabled()}) or JSONResponse({"enabled": False})
+
+    @server_app.post("/api/autostart")
+    async def _ag_autostart_post(request: Request):
+        body = await request.json()
+        enable = body.get("enable", False)
+        if enable:
+            ok, msg = _ag.enable_autostart()
+        else:
+            ok, msg = _ag.disable_autostart()
+        return JSONResponse({"ok": ok, "message": msg, "enabled": _ag.is_autostart_enabled()})
+
+    @server_app.post("/api/change_password")
+    async def _ag_change_pwd(request: Request):
+        body = await request.json()
+        old_pass = body.get("old_password", "")
+        new_pass = body.get("new_password", "")
+        if not new_pass or len(new_pass) < 4:
+            return JSONResponse({"ok": False, "error": "新密码至少4个字符"}, status_code=400)
+        from config import USERS, hash_password
+        import config as cfg
+        if not cfg.verify_password(old_pass, USERS.get("admin", "")):
+            return JSONResponse({"ok": False, "error": "旧密码错误"}, status_code=401)
+        USERS["admin"] = hash_password(new_pass)
+        import json as _json, os as _os
+        pass_file = _os.path.join(_os.path.expanduser("~"), ".remote_desktop_password.json")
+        try:
+            with open(pass_file, 'w', encoding='utf-8') as f:
+                _json.dump({"admin": USERS["admin"]}, f)
+        except Exception:
+            pass
+        return JSONResponse({"ok": True, "message": "密码修改成功"})
+
+    @server_app.post("/api/relay_login")
+    async def _ag_relay_login(request: Request):
+        import urllib.request, urllib.parse, json as _json
+        body = await request.json()
+        relay_url = body.get("relay_url", "").rstrip("/")
+        username = body.get("username", "admin")
+        password = body.get("password", "admin123")
+        if not relay_url:
+            return JSONResponse({"ok": False, "error": "请输入中继服务器地址"}, status_code=400)
+        try:
+            data = urllib.parse.urlencode({"username": username, "password": password}).encode()
+            req = urllib.request.Request(relay_url + "/login", data=data, method="POST")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = _json.loads(resp.read().decode())
+                if result.get("ok") and result.get("token"):
+                    _ag._relay_tokens[relay_url] = result["token"]
+                    return JSONResponse({"ok": True, "token": result["token"]})
+                return JSONResponse(result)
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": f"连接失败: {e}"}, status_code=500)
+
+    @server_app.get("/api/relay_hosts")
+    async def _ag_relay_hosts(relay_url: str = ""):
+        import urllib.request, json as _json
+        relay_url = relay_url.rstrip("/")
+        if not relay_url:
+            relay_url = state.relay_url.replace("ws://", "http://").replace("wss://", "https://")
+        if not relay_url:
+            return JSONResponse({"ok": False, "error": "未配置中继服务器地址"}, status_code=400)
+        token = _ag._relay_tokens.get(relay_url, "")
+        try:
+            url = relay_url + "/api/hosts"
+            if token:
+                url += f"?token={token}"
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = _json.loads(resp.read().decode())
+                return JSONResponse(result)
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                return JSONResponse({"ok": False, "error": "需要登录", "need_login": True})
+            return JSONResponse({"ok": False, "error": f"服务器错误: {e.code}"}, status_code=500)
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": f"连接失败: {e}"}, status_code=500)
 
     # 把 agent 的配置页也加到 server_app
     @server_app.get("/config", response_class=HTMLResponse)
