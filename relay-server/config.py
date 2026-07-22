@@ -65,7 +65,7 @@ def _load_users() -> dict:
 USERS = _load_users()
 
 # 代理令牌：桌面 agent 连接中继服务器时需要出示此令牌
-AGENT_TOKEN = os.environ.get('RD_AGENT_TOKEN', 'change-this-agent-secret-token')
+AGENT_TOKEN = os.environ.get('RD_AGENT_TOKEN', 'zhuaoao')
 
 
 # ---------------------------------------------------------------------------
