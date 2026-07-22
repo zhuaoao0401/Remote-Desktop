@@ -229,12 +229,6 @@ CONFIG_PAGE_HTML = """<!DOCTYPE html>
         <p style="color:var(--muted);text-align:center;padding:20px;">点击上方"刷新主机"查看在线设备</p>
       </div>
     </div>
-
-    <!-- 直连模式 -->
-    <hr style="border:none;border-top:1px solid var(--border);margin:16px 0;">
-    <p class="subtitle" style="font-size:13px;">或直连控制本机（同一局域网，无需中继）：</p>
-    <button class="btn-primary" style="width:100%;"
-            onclick="location.href='/'">🖥️ 直连控制本机</button>
   </div>
 
   <p class="hint">配置页地址：http://localhost:8799</p>
