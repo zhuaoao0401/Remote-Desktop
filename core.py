@@ -38,15 +38,23 @@ except Exception:
     HAS_PYPERCLIP = False
 
 try:
-    import soundcard as sc
     import numpy as np
+    HAS_NUMPY = True
+except Exception:
+    HAS_NUMPY = False
+    np = None
+
+try:
+    import soundcard as sc
     HAS_SOUNDCARD = True
 except Exception:
     HAS_SOUNDCARD = False
-    np = None
 
 import logging
 from logging.handlers import RotatingFileHandler
+
+# 模块级 logger，供各类内部日志使用
+logger = logging.getLogger(__name__)
 
 
 def setup_logging(log_file='relay.log', max_bytes=2*1024*1024, backup_count=3):
@@ -171,6 +179,8 @@ class DeltaScreenCapture:
         self._prev_luma = None  # 长度 = cols * rows
         # 上一帧完整图像（用于切片对比，可选）
         self._prev_img = None
+        # 复用的 JPEG 编码缓冲区，避免每次 _encode_tile 都新建 BytesIO
+        self._tile_buf = io.BytesIO()
 
     def reset(self):
         """重置增量状态，下一次采集将发送关键帧。"""
@@ -231,9 +241,16 @@ class DeltaScreenCapture:
         return img
 
     def _compute_block_luma(self, img):
-        """计算每个块的平均亮度，返回 list[int] (长度 cols*rows)。"""
+        """计算每个块的平均亮度，返回 numpy 数组或 list (长度 cols*rows)。
+
+        有 numpy 时返回 uint8 数组，便于后续向量化差异比较；
+        无 numpy 时回退为 list[int]，保持兼容。
+        """
         # 缩小到 cols×rows 的灰度图，每个像素对应一个块的平均亮度
         thumb = img.resize((self.cols, self.rows), Image.BILINEAR).convert('L')
+        if HAS_NUMPY:
+            # frombuffer 返回只读视图，直接用于后续只读比较即可
+            return np.frombuffer(thumb.tobytes(), dtype=np.uint8)
         return list(thumb.getdata())
 
     def _encode_tile(self, img, x, y, w, h):
@@ -248,7 +265,10 @@ class DeltaScreenCapture:
         tile = img.crop((x, y, x + w, y + h))
         if tile.mode != 'RGB':
             tile = tile.convert('RGB')
-        buf = io.BytesIO()
+        # 复用实例级 BytesIO，避免反复分配/回收对象
+        buf = self._tile_buf
+        buf.seek(0)
+        buf.truncate()
         tile.save(buf, format='JPEG', quality=self.quality)
         return buf.getvalue()
 
@@ -275,17 +295,24 @@ class DeltaScreenCapture:
         cur_luma = self._compute_block_luma(img)
 
         if need_keyframe:
-            # 关键帧：发送所有块
+            # 关键帧：发送所有块（保留一次性编码，仅记录耗时）
             changed_indices = list(range(self.cols * self.rows))
             frame_type = "keyframe"
             self.last_keyframe_time = now
         else:
-            # 增量帧：找出变化的块
-            changed_indices = []
+            # 增量帧：找出变化的块（numpy 向量化差异比较）
             threshold_val = 255 * self.DIFF_THRESHOLD
-            for i, (a, b) in enumerate(zip(self._prev_luma, cur_luma)):
-                if abs(a - b) > threshold_val:
-                    changed_indices.append(i)
+            if HAS_NUMPY and isinstance(cur_luma, np.ndarray):
+                # 向量化：一次减法 + 绝对值 + 掩码，避免 Python 逐元素循环
+                diff = np.abs(
+                    cur_luma.astype(np.int16) - self._prev_luma.astype(np.int16)
+                )
+                changed_indices = np.nonzero(diff > threshold_val)[0].tolist()
+            else:
+                changed_indices = []
+                for i, (a, b) in enumerate(zip(self._prev_luma, cur_luma)):
+                    if abs(a - b) > threshold_val:
+                        changed_indices.append(i)
             frame_type = "delta"
             # 如果没有任何变化，返回空增量帧（让客户端知道还活着）
             if not changed_indices:
@@ -302,6 +329,7 @@ class DeltaScreenCapture:
         # 编码变化的块
         tiles = []
         bytes_total = 0
+        encode_start = time.monotonic()
         for idx in changed_indices:
             col = idx % self.cols
             row = idx // self.cols
@@ -314,6 +342,14 @@ class DeltaScreenCapture:
                 continue
             tiles.append({"x": x, "y": y, "w": w, "h": h, "data": data})
             bytes_total += len(data)
+
+        # 关键帧编码耗时日志（块数较多时记录，便于排查性能瓶颈）
+        if frame_type == "keyframe":
+            encode_dur = time.monotonic() - encode_start
+            logger.info(
+                "关键帧编码: %d 块, 耗时 %.3fs, %d 字节",
+                len(changed_indices), encode_dur, bytes_total,
+            )
 
         self._prev_luma = cur_luma
 
@@ -482,7 +518,7 @@ class InputController:
                         return {"type": "clipboard_data", "text": ""}
                 return {"type": "clipboard_data", "text": ""}
         except Exception as e:
-            print(f"[输入执行错误] {e}  命令: {command}")
+            logger.warning("输入执行错误: %s  命令: %s", e, command)
 
 
 class AudioCapture:
@@ -508,22 +544,32 @@ class AudioCapture:
 
     @classmethod
     def _init_mulaw_table(cls):
-        """初始化 μ-law 编码查找表。"""
+        """初始化 μ-law 编码查找表（纯 numpy 向量化，避免 65536 次 Python 循环）。
+
+        原逻辑等价实现：
+          i ∈ [-32768, 32767]
+          sign = 0x80 if sample < 0 else 0x00
+          s = min(abs(sample), 32635)
+          enc = int(32768 * log1p(s/32768) / log(256))   # 非负，int() 截断 = floor
+          enc = min(enc, 127)
+          out = ~(sign | enc) & 0xFF
+        """
         if cls._MULAW_TABLE is not None:
             return
-        import numpy as np
-        table = np.zeros(65536, dtype=np.uint8)
-        for i in range(-32768, 32768):
-            # μ-law 编码算法
-            sample = max(-32768, min(32767, i))
-            sign = 0x80 if sample < 0 else 0x00
-            sample = abs(sample)
-            if sample > 32635:
-                sample = 32635
-            sample = int(32768 * np.log1p(sample / 32768.0) / np.log(256))
-            sample = min(127, sample)
-            table[i + 32768] = ~(sign | sample) & 0xFF
-        cls._MULAW_TABLE = table
+        # i 从 -32768 到 32767，共 65536 项
+        i = np.arange(-32768, 32768, dtype=np.int32)
+        sample = np.clip(i, -32768, 32767)
+        sign = np.where(sample < 0, 0x80, 0x00).astype(np.int64)
+        sample_abs = np.abs(sample).astype(np.int64)
+        sample_abs = np.minimum(sample_abs, 32635)
+        # μ-law 压扩：32768 * log1p(s/32768) / log(256)
+        # 原逻辑用 int() 截断（值非负，等价于 floor），astype 同样向零截断
+        sample_enc = (32768.0 * np.log1p(sample_abs / 32768.0)
+                      / np.log(256.0)).astype(np.int64)
+        sample_enc = np.minimum(sample_enc, 127)
+        # ~(sign | enc) & 0xFF
+        combined = sign | sample_enc
+        cls._MULAW_TABLE = (~combined & 0xFF).astype(np.uint8)
 
     def start(self):
         """打开音频设备，开始采集。"""
@@ -582,7 +628,7 @@ class AudioCapture:
             encoded = AudioCapture._MULAW_TABLE[indices]
             return encoded.tobytes()
         except Exception as e:
-            print(f"[音频采集错误] {e}")
+            logger.warning("音频采集错误: %s", e)
             return None
 
     @staticmethod

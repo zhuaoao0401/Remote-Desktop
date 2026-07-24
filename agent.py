@@ -80,8 +80,8 @@ class AgentState:
                         pass_cfg = _json.load(pf)
                     if pass_cfg.get("admin"):
                         config.USERS["admin"] = pass_cfg["admin"]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"加载配置失败: {e}")
 
     def save_config(self):
         """保存配置到本地文件。"""
@@ -95,8 +95,8 @@ class AgentState:
             }
             with open(self.CONFIG_FILE, 'w', encoding='utf-8') as f:
                 json.dump(cfg, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"保存配置失败: {e}")
 
     def to_dict(self):
         return {
@@ -477,15 +477,12 @@ async def api_start(request: Request):
 @app.post("/api/stop")
 async def api_stop():
     state._stop_flag = True
-    # 关闭 WebSocket 连接
-    if state._ws:
-        try:
-            await state._ws.close()
-        except Exception:
-            pass
-    # 等待线程结束
+    # 不跨事件循环关闭 WebSocket，只设置标志让 agent 线程自行关闭
+    # 等待线程结束（非阻塞方式：最多等 2 秒）
     if state._thread and state._thread.is_alive():
-        state._thread.join(timeout=3)
+        # 在 executor 中 join，避免阻塞 uvicorn 事件循环
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, state._thread.join, 2)
     state._thread = None
     state._stop_flag = False
     state.status = "idle"
@@ -599,8 +596,8 @@ async def change_password(request: Request):
     try:
         with open(pass_file, 'w', encoding='utf-8') as f:
             json.dump({"admin": USERS["admin"]}, f)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"保存密码文件失败: {e}")
     return JSONResponse({"ok": True, "message": "密码修改成功"})
 
 
@@ -873,12 +870,16 @@ async def _agent_async_main():
                                     continue
                                 elif cmd_type == "file_start":
                                     import os
-                                    fname = cmd.get("name", "upload")
+                                    fname = os.path.basename(cmd.get("name", "upload"))
                                     fsize = cmd.get("size", 0)
                                     offset = cmd.get("offset", 0)
                                     save_dir = os.path.join(os.path.expanduser("~"), "Desktop")
                                     os.makedirs(save_dir, exist_ok=True)
                                     save_path = os.path.join(save_dir, fname)
+                                    # 安全检查：确保最终路径在 save_dir 内
+                                    if not os.path.abspath(save_path).startswith(os.path.abspath(save_dir)):
+                                        logger.warning(f"[Agent] 拒绝路径遍历: {fname}")
+                                        continue
                                     # 如果有 offset，尝试续传
                                     if offset > 0 and os.path.exists(save_path) and os.path.getsize(save_path) >= offset:
                                         file_recv["fp"] = open(save_path, "ab")
@@ -919,7 +920,20 @@ async def _agent_async_main():
                             except Exception:
                                 break
 
-                    await asyncio.gather(capture_loop(), audio_loop(), command_loop(), heartbeat_loop())
+                    tasks = [
+                        asyncio.ensure_future(capture_loop()),
+                        asyncio.ensure_future(audio_loop()),
+                        asyncio.ensure_future(command_loop()),
+                        asyncio.ensure_future(heartbeat_loop()),
+                    ]
+                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                    # 取消所有未完成的任务
+                    for t in pending:
+                        t.cancel()
+                    # 传播第一个完成的任务中的异常
+                    for t in done:
+                        if t.exception():
+                            raise t.exception()
             except asyncio.CancelledError:
                 raise
             except (websockets.exceptions.ConnectionClosed,
@@ -943,7 +957,7 @@ async def _agent_async_main():
         state.status = "idle"
         state.message = "已停止"
         state._ws = None
-        print("[已停止]")
+        logger.info("[Agent] 已停止")
 
 
 # ===========================================================================

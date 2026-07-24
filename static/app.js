@@ -22,6 +22,8 @@
   let bytesPerSec = 0;
   let connected = false;
   let reconnectTimer = null;
+  let reconnectDelay = 2000;          // 重连指数退避起始延迟
+  const RECONNECT_MAX_DELAY = 30000;  // 重连最大延迟 30s
   let lastFrameTime = 0;
   let frameLatency = 0;
 
@@ -56,6 +58,7 @@
 
     ws.onopen = () => {
       connected = true;
+      reconnectDelay = 2000; // 重连成功，重置指数退避
       setStatus('已连接', 'connected');
       overlay.classList.add('hidden');
       // 启动 ping
@@ -68,12 +71,15 @@
       showOverlay('连接已断开，正在重连...');
       scheduleReconnect();
     };
-    ws.onerror = () => {};
+    ws.onerror = (e) => console.error('WebSocket error:', e);
   }
 
   function scheduleReconnect() {
     if (reconnectTimer) return;
-    reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 2000);
+    const delay = reconnectDelay;
+    reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
+    // 指数退避：每次翻倍，上限 30 秒
+    reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_DELAY);
   }
 
   function sendCmd(cmd) {
@@ -149,7 +155,7 @@
         // 收到被控端剪贴板内容，写入本地剪贴板
         if (msg.text) {
           lastClipboardText = msg.text;
-          try { await navigator.clipboard.writeText(msg.text); } catch (_) {}
+          try { await navigator.clipboard.writeText(msg.text); } catch (err) { console.error('写入剪贴板失败:', err); }
         }
       } else if (msg.type === 'file_progress') {
         updateFileProgress(msg.percent, msg.name, msg.received, msg.size);
@@ -189,7 +195,7 @@
       frameCount++;
       bytesPerSec += e.data.byteLength;
       frameLatency = Math.round(performance.now() - lastFrameTime);
-    } catch (err) {}
+    } catch (err) { console.error('解码错误:', err); }
     lastFrameTime = performance.now();
   }
 
@@ -412,7 +418,7 @@
       try {
         const text = await navigator.clipboard.readText();
         if (text) { lastClipboardText = text; sendCmd({ type: 'set_clipboard', text: text }); }
-      } catch (_) {}
+      } catch (err) { console.error('读取本地剪贴板失败:', err); }
     }, 500);
   });
 
@@ -425,7 +431,7 @@
         lastClipboardText = text;
         sendCmd({ type: 'set_clipboard', text: text });
       }
-    } catch (_) {}
+    } catch (err) { console.error('剪贴板自动同步失败:', err); }
   }, 2000);
 
   // Ctrl+C / Ctrl+V 时自动同步
@@ -433,8 +439,8 @@
     try {
       navigator.clipboard.readText().then(text => {
         if (text) { lastClipboardText = text; sendCmd({ type: 'set_clipboard', text: text }); }
-      }).catch(() => {});
-    } catch (_) {}
+      }).catch(err => console.error('copy 读取剪贴板失败:', err));
+    } catch (err) { console.error('copy 同步失败:', err); }
   });
 
   // ---------- 文件传输 ----------
@@ -443,7 +449,17 @@
   const fileProgBar = document.getElementById('fileProgressBar');
   const fileProgName = document.getElementById('fileProgressName');
   const fileProgPct = document.getElementById('fileProgressPercent');
+  const fileCancelBtn = document.getElementById('fileCancelBtn');
   let fileTransferring = false;
+  // 滑动窗口流控状态
+  const FILE_WINDOW_CHUNKS = 3;      // 最多 3 个未确认 chunk
+  const FILE_CHUNK_SIZE = 64 * 1024; // 64KB chunks
+  let fileCancelRequested = false;   // 是否请求取消
+  let fileSentBytes = 0;             // 已发送字节数
+  let fileAckedBytes = 0;            // 已被 agent 确认的字节数
+  let fileProgressReceived = false;  // 是否收到过 file_progress（判断机制是否存在）
+  let fileChunksSinceAck = 0;        // 距上次确认发送的 chunk 数（无 ack 时的兜底限速）
+  let fileProgressWaiters = [];      // 等待 file_progress 推进窗口的回调
 
   document.getElementById('fileBtn').addEventListener('click', () => {
     if (fileTransferring) return;
@@ -469,9 +485,44 @@
     for (const file of files) { await sendFile(file); }
   });
 
+  // 取消传输按钮：发送 file_cancel 并停止发送循环
+  if (fileCancelBtn) {
+    fileCancelBtn.addEventListener('click', () => {
+      if (!fileTransferring) return;
+      fileCancelRequested = true;
+      sendCmd({ type: 'file_cancel' });
+      fileProgPct.textContent = '取消中...';
+      // 唤醒可能在等待窗口的发送循环
+      notifyFileWaiters();
+    });
+  }
+
+  // 唤醒所有等待 file_progress 的回调
+  function notifyFileWaiters() {
+    const waiters = fileProgressWaiters;
+    fileProgressWaiters = [];
+    waiters.forEach(fn => fn());
+  }
+
+  // 等待 file_progress 推进窗口，带超时防止死锁
+  function waitForFileProgress(timeoutMs) {
+    return new Promise(resolve => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; resolve(); };
+      fileProgressWaiters.push(finish);
+      setTimeout(finish, timeoutMs);
+    });
+  }
+
   async function sendFile(file) {
-    const CHUNK_SIZE = 64 * 1024; // 64KB chunks
+    const CHUNK_SIZE = FILE_CHUNK_SIZE;
     fileTransferring = true;
+    fileCancelRequested = false;
+    fileSentBytes = 0;
+    fileAckedBytes = 0;
+    fileProgressReceived = false;
+    fileChunksSinceAck = 0;
+    fileProgressWaiters = [];
     fileProgEl.style.display = 'block';
     fileProgName.textContent = file.name;
     fileProgPct.textContent = '0%';
@@ -481,17 +532,39 @@
     sendCmd({ type: 'file_start', name: file.name, size: file.size });
     let offset = 0;
     while (offset < file.size) {
+      if (fileCancelRequested) break;
+      // 滑动窗口：最多 FILE_WINDOW_CHUNKS 个未确认 chunk。
+      // 仅在确认存在 file_progress 机制时启用窗口等待，否则无 ack 会一直阻塞。
+      if (fileProgressReceived &&
+          (fileSentBytes - fileAckedBytes) >= FILE_WINDOW_CHUNKS * CHUNK_SIZE) {
+        await waitForFileProgress(2000);
+        if (fileCancelRequested) break;
+      }
       const slice = file.slice(offset, offset + CHUNK_SIZE);
       const buf = await slice.arrayBuffer();
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(buf);
+        fileSentBytes += buf.byteLength;
+        fileChunksSinceAck++;
       } else {
         sendCmd({ type: 'file_cancel' });
         break;
       }
       offset += buf.byteLength;
-      // 等 agent 确认进度（避免发太快）
-      await new Promise(r => setTimeout(r, 30));
+      // 兜底限速：没有 file_progress 机制（或确认迟迟不来）时，
+      // 每发 5 个 chunk 等一个小延迟(5ms)，避免压垮缓冲区（比固定 30ms 快得多）
+      if (fileChunksSinceAck >= 5) {
+        await new Promise(r => setTimeout(r, 5));
+        fileChunksSinceAck = 0;
+      }
+    }
+
+    if (fileCancelRequested) {
+      fileProgPct.textContent = '已取消';
+      fileTransferring = false;
+      notifyFileWaiters();
+      setTimeout(() => { fileProgEl.style.display = 'none'; }, 1500);
+      return;
     }
     // 等待 file_done 确认（超时 10 秒自动关闭进度条）
     setTimeout(() => {
@@ -503,12 +576,21 @@
     fileProgBar.style.width = Math.min(100, pct) + '%';
     fileProgPct.textContent = Math.min(100, pct) + '%';
     if (name) fileProgName.textContent = name;
+    // 收到 file_progress 回调 → 推进滑动窗口
+    fileProgressReceived = true;
+    if (typeof received === 'number' && received > fileAckedBytes) {
+      fileAckedBytes = received;
+    }
+    fileChunksSinceAck = 0;
+    notifyFileWaiters();
   }
   function finishFileProgress(name, path) {
+    if (fileCancelRequested) { fileTransferring = false; return; }
     fileProgPct.textContent = '完成!';
     fileProgBar.style.width = '100%';
     setTimeout(() => { fileProgEl.style.display = 'none'; }, 2000);
     fileTransferring = false;
+    notifyFileWaiters();
   }
 
   // ---------- 截图 ----------
@@ -568,9 +650,13 @@
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       }
       if (audioCtx.state === 'suspended') audioCtx.resume();
+      // 通知服务端开始采集音频
+      sendCmd({ type: 'enable_audio' });
     } else {
       btn.textContent = '🔇';
       btn.classList.add('btn-muted');
+      // 通知服务端停止采集音频
+      sendCmd({ type: 'disable_audio' });
     }
   });
 
@@ -594,7 +680,7 @@
 
   // ---------- 工具栏按钮 ----------
   document.getElementById('reconnectBtn').addEventListener('click', () => {
-    if (ws) { try { ws.close(); } catch (_) {} }
+    if (ws) { try { ws.close(); } catch (err) { console.error('关闭旧连接失败:', err); } }
     connect();
   });
 
@@ -612,7 +698,7 @@
     localStorage.setItem('rd_theme', isLight ? 'light' : 'dark');
   });
   document.getElementById('fullscreenBtn').addEventListener('click', () => {
-    if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(() => {});
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(err => console.error('进入全屏失败:', err));
     else document.exitFullscreen();
   });
 

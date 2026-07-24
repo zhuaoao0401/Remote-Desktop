@@ -14,6 +14,7 @@
 import asyncio
 import json
 import argparse
+import logging
 import os
 from collections import defaultdict
 
@@ -28,6 +29,8 @@ from core import SessionManager, authenticate
 import config
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+logger = logging.getLogger("relay")
 
 app = FastAPI(title="远程桌面 - 中继服务器")
 # 允许跨域（让被控端配置页能直接获取主机列表）
@@ -152,11 +155,19 @@ async def agent_endpoint(ws: WebSocket):
     if token != config.AGENT_TOKEN:
         await ws.close(code=4001, reason="无效的代理令牌")
         return
+    # 同名主机检测：若该 desktop_id 已有旧连接，先关闭旧连接再接受新连接
+    old_ws = agents.pop(desktop_id, None)
+    if old_ws is not None:
+        logger.info(f"[同名主机] 检测到 {desktop_id} 已有连接，关闭旧连接并接受新连接")
+        try:
+            await old_ws.close(code=4002, reason="被同名新连接替换")
+        except Exception as e:
+            logger.exception(f"[同名主机] 关闭旧连接时异常: {e}")
     await ws.accept()
     agents[desktop_id] = ws
     agent_hostnames[desktop_id] = hostname
     agent_online_since[desktop_id] = time.strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[代理上线] {hostname} (id={desktop_id})")
+    logger.info(f"[代理上线] {hostname} (id={desktop_id})")
 
     # 通知所有等待的客户端
     for c in list(clients.get(desktop_id, set())):
@@ -186,33 +197,47 @@ async def agent_endpoint(ws: WebSocket):
                 except Exception:
                     pass
 
-            # 转发给该桌面的所有客户端
-            dead = []
-            for c in clients.get(desktop_id, set()):
-                try:
+            # 转发给该桌面的所有客户端（并行发送）
+            client_list = list(clients.get(desktop_id, set()))
+            if client_list:
+                async def _forward(c):
                     if isinstance(data, bytes):
                         await c.send_bytes(data)
                     else:
                         await c.send_text(data)
-                except Exception:
-                    dead.append(c)
-            for c in dead:
-                clients[desktop_id].discard(c)
+
+                results = await asyncio.gather(
+                    *(_forward(c) for c in client_list),
+                    return_exceptions=True,
+                )
+                for c, res in zip(client_list, results):
+                    if isinstance(res, Exception):
+                        clients[desktop_id].discard(c)
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        print(f"[代理错误] {e}")
+        logger.exception(f"[代理错误] {e}")
     finally:
-        agents.pop(desktop_id, None)
-        agent_inits.pop(desktop_id, None)
-        agent_hostnames.pop(desktop_id, None)
-        agent_online_since.pop(desktop_id, None)
-        for c in list(clients.get(desktop_id, set())):
-            try:
-                await c.send_text(json.dumps({"type": "agent_disconnected"}))
-            except Exception:
-                pass
-        print(f"[代理下线] {desktop_id}")
+        # 仅当当前注册的代理仍是自己时才清理，避免覆盖同名新连接的数据
+        if agents.get(desktop_id) is ws:
+            agents.pop(desktop_id, None)
+            agent_inits.pop(desktop_id, None)
+            agent_hostnames.pop(desktop_id, None)
+            agent_online_since.pop(desktop_id, None)
+            # 通知所有等待的客户端：代理已断开（并行发送）
+            client_list = list(clients.get(desktop_id, set()))
+            if client_list:
+                notify_msg = json.dumps({"type": "agent_disconnected"})
+                results = await asyncio.gather(
+                    *(c.send_text(notify_msg) for c in client_list),
+                    return_exceptions=True,
+                )
+                for c, res in zip(client_list, results):
+                    if isinstance(res, Exception):
+                        clients[desktop_id].discard(c)
+            logger.info(f"[代理下线] {desktop_id}")
+        else:
+            logger.info(f"[代理下线] {desktop_id} (已被同名新连接替换，跳过清理)")
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +298,7 @@ async def client_endpoint(ws: WebSocket):
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        print(f"[客户端错误] {e}")
+        logger.exception(f"[客户端错误] {e}")
     finally:
         clients[desktop_id].discard(ws)
         # 所有客户端都断开了，通知 agent 停止传画面
@@ -302,15 +327,19 @@ if __name__ == "__main__":
     else:
         proto = "http"
         ws_proto = "ws"
-    print("=" * 56)
-    print("  远程桌面控制 - 中继服务器")
-    print("=" * 56)
-    print(f"  Web 访问 : {proto}://127.0.0.1:{args.port}")
-    print(f"  公网访问 : {proto}://<服务器公网IP>:{args.port}")
-    print(f"  默认账号 : admin / admin123")
-    print(f"  代理令牌 : {config.AGENT_TOKEN}")
-    print("-" * 56)
-    print("  在被控电脑运行:")
-    print(f"  python agent.py --relay {ws_proto}://<服务器IP>:{args.port}")
-    print("=" * 56)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    logger.info("=" * 56)
+    logger.info("  远程桌面控制 - 中继服务器")
+    logger.info("=" * 56)
+    logger.info(f"  Web 访问 : {proto}://127.0.0.1:{args.port}")
+    logger.info(f"  公网访问 : {proto}://<服务器公网IP>:{args.port}")
+    logger.info(f"  默认账号 : admin / admin123")
+    logger.info(f"  代理令牌 : {config.AGENT_TOKEN}")
+    logger.info("-" * 56)
+    logger.info("  在被控电脑运行:")
+    logger.info(f"  python agent.py --relay {ws_proto}://<服务器IP>:{args.port}")
+    logger.info("=" * 56)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info", **ssl_kwargs)

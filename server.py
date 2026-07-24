@@ -125,14 +125,7 @@ async def websocket_endpoint(ws: WebSocket):
     file_path = ""
     loop = asyncio.get_event_loop()
     try:
-        # 如果支持音频，启动音频采集
-        if audio_cap_supported:
-            try:
-                audio_obj = AudioCapture()
-                audio_obj.start()
-            except Exception as e:
-                print(f"[音频] 采集失败: {e}")
-                audio_obj = None
+        # 音频不提前启动，等收到 enable_audio 命令再启动
 
         async def capture_loop():
             """持续采集屏幕增量并发送。"""
@@ -162,7 +155,7 @@ async def websocket_endpoint(ws: WebSocket):
 
         async def command_loop():
             """接收并执行远程命令。"""
-            nonlocal file_fp, file_name, file_size, file_received, file_path
+            nonlocal file_fp, file_name, file_size, file_received, file_path, audio_obj
             while True:
                 msg = await ws.receive()
                 if msg["type"] == "websocket.disconnect":
@@ -217,14 +210,34 @@ async def websocket_endpoint(ws: WebSocket):
                             if result:
                                 await ws.send_text(json.dumps(result))
                             continue
+                        elif t == "enable_audio":
+                            if audio_cap_supported and not audio_obj:
+                                try:
+                                    audio_obj = AudioCapture()
+                                    audio_obj.start()
+                                    print("[音频] 已启动采集")
+                                except Exception as e:
+                                    print(f"[音频] 启动失败: {e}")
+                                    audio_obj = None
+                            continue
+                        elif t == "disable_audio":
+                            if audio_obj:
+                                audio_obj.stop()
+                                audio_obj = None
+                                print("[音频] 已停止采集")
+                            continue
                         elif t == "file_start":
                             import os
-                            fname = cmd.get("name", "upload")
+                            fname = os.path.basename(cmd.get("name", "upload"))
                             fsize = cmd.get("size", 0)
                             offset = cmd.get("offset", 0)
                             save_dir = os.path.join(os.path.expanduser("~"), "Desktop")
                             os.makedirs(save_dir, exist_ok=True)
                             save_path = os.path.join(save_dir, fname)
+                            # 安全检查：确保最终路径在 save_dir 内
+                            if not os.path.abspath(save_path).startswith(os.path.abspath(save_dir)):
+                                print(f"[安全] 拒绝路径遍历: {fname}")
+                                continue
                             # 如果有 offset，尝试续传
                             if offset > 0 and os.path.exists(save_path) and os.path.getsize(save_path) >= offset:
                                 file_fp = open(save_path, "ab")
