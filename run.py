@@ -121,6 +121,7 @@ def start_services(port=8799, open_browser=True):
         hostname = (body.get("hostname") or "").strip()
         relay = (body.get("relay") or "").strip() or _ag.AgentState.DEFAULT_RELAY_URL
         token = (body.get("token") or "").strip()
+        proxy = (body.get("proxy") or "").strip()
         if not hostname:
             return JSONResponse({"ok": False, "error": "请输入主机名"}, status_code=400)
         if state._thread is not None:
@@ -128,6 +129,7 @@ def start_services(port=8799, open_browser=True):
 
         state.hostname = hostname
         state.relay_url = relay
+        state.proxy = proxy
         if token:
             state.token = token
         state.desktop_id = hostname

@@ -44,6 +44,7 @@ class AgentState:
         self.relay_url = self.DEFAULT_RELAY_URL
         self.token = config.AGENT_TOKEN
         self.desktop_id = ""
+        self.proxy = ""  # HTTP/HTTPS 代理地址，如 http://127.0.0.1:7890
         self.status = "idle"
         self.message = "未启动"
         self._thread = None
@@ -66,6 +67,8 @@ class AgentState:
                     self.relay_url = cfg['relay_url']
                 if cfg.get('token'):
                     self.token = cfg['token']
+                if cfg.get('proxy'):
+                    self.proxy = cfg['proxy']
                 # 加载持久化密码
                 pass_file = os.path.join(os.path.expanduser("~"), ".remote_desktop_password.json")
                 if os.path.exists(pass_file):
@@ -85,6 +88,7 @@ class AgentState:
                 'hostname': self.hostname,
                 'relay_url': self.relay_url,
                 'token': self.token if self.token != config.AGENT_TOKEN else '',
+                'proxy': self.proxy,
             }
             with open(self.CONFIG_FILE, 'w', encoding='utf-8') as f:
                 json.dump(cfg, f, ensure_ascii=False, indent=2)
@@ -95,6 +99,7 @@ class AgentState:
         return {
             "hostname": self.hostname,
             "relay_url": self.relay_url,
+            "proxy": self.proxy,
             "status": self.status,
             "message": self.message,
             "last_connected": self.last_connected,
@@ -172,6 +177,11 @@ CONFIG_PAGE_HTML = """<!DOCTYPE html>
         <input type="text" id="token" placeholder="留空使用默认令牌"
                value="">
       </div>
+      <div class="form-group">
+        <label for="proxy">HTTP/HTTPS 代理（可选）</label>
+        <input type="text" id="proxy" placeholder="如 http://127.0.0.1:7890"
+               value="">
+      </div>
       <div id="status-box" class="status-box idle">状态：未启动</div>
       <button type="submit" id="startBtn" class="btn-primary">启动被控</button>
       <button type="button" id="stopBtn" class="btn-small"
@@ -247,6 +257,7 @@ async function refresh() {
     const d = await r.json();
     if (d.hostname) $('hostname').value = d.hostname;
     if (d.relay_url) $('relay').value = d.relay_url;
+    if (d.proxy !== undefined) $('proxy').value = d.proxy;
     setStatus(d.status, d.message);
     const running = d.status === 'connected' || d.status === 'connecting';
     $('startBtn').style.display = running ? 'none' : 'block';
@@ -269,6 +280,7 @@ $('cfgForm').addEventListener('submit', async (e) => {
   const hostname = $('hostname').value.trim();
   const relay = $('relay').value.trim() || 'ws://43.163.239.11:9090';
   const token = $('token').value.trim();
+  const proxy = $('proxy').value.trim();
   if (!hostname) { alert('请输入主机名'); return; }
   $('startBtn').disabled = true;
   $('startBtn').textContent = '启动中...';
@@ -276,7 +288,7 @@ $('cfgForm').addEventListener('submit', async (e) => {
     const r = await fetch('/api/start', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({hostname, relay, token})
+      body: JSON.stringify({hostname, relay, token, proxy})
     });
     const d = await r.json();
     if (!d.ok) { setStatus('error', d.error || '启动失败'); }
@@ -434,6 +446,7 @@ async def api_start(request: Request):
     hostname = (body.get("hostname") or "").strip()
     relay = (body.get("relay") or "").strip() or AgentState.DEFAULT_RELAY_URL
     token = (body.get("token") or "").strip()
+    proxy = (body.get("proxy") or "").strip()
     if not hostname:
         return JSONResponse({"ok": False, "error": "请输入主机名"}, status_code=400)
     if state._thread is not None:
@@ -441,6 +454,7 @@ async def api_start(request: Request):
 
     state.hostname = hostname
     state.relay_url = relay
+    state.proxy = proxy
     if token:
         state.token = token
     # 用主机名生成 desktop_id（做 URL 安全编码）
@@ -686,9 +700,11 @@ async def _agent_async_main():
             try:
                 state.status = "connecting"
                 state.message = "正在连接中继..."
-                async with websockets.connect(url, max_size=None,
-                                              ping_interval=20,
-                                              open_timeout=15) as ws:
+                # 构建连接参数
+                ws_kwargs = dict(max_size=None, ping_interval=20, open_timeout=15)
+                if state.proxy:
+                    ws_kwargs["proxy"] = state.proxy
+                async with websockets.connect(url, **ws_kwargs) as ws:
                     state._ws = ws
                     state.status = "connected"
                     retry_delay = 2
