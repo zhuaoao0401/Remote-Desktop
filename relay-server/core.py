@@ -473,12 +473,10 @@ class InputController:
                 pyautogui.moveTo(int(command['x']), int(command['y']),
                                  _pause=False)
             elif t == 'mouse_down':
-                pyautogui.mouseDown(int(command.get('x', 0)),
-                                    int(command.get('y', 0)),
+                pyautogui.mouseDown(int(command['x']), int(command['y']),
                                     button=command.get('button', 'left'))
             elif t == 'mouse_up':
-                pyautogui.mouseUp(int(command.get('x', 0)),
-                                  int(command.get('y', 0)),
+                pyautogui.mouseUp(int(command['x']), int(command['y']),
                                   button=command.get('button', 'left'))
             elif t == 'mouse_click':
                 pyautogui.click(int(command['x']), int(command['y']),
@@ -634,7 +632,7 @@ class AudioCapture:
     @staticmethod
     def is_available():
         """检查音频采集是否可用。"""
-        return HAS_SOUNDCARD
+        return HAS_SOUNDCARD and HAS_NUMPY
 
 
 class SessionManager:

@@ -462,6 +462,7 @@ async def api_start(request: Request):
         state.token = token
     # 用主机名生成 desktop_id（做 URL 安全编码）
     state.desktop_id = hostname
+    state._stop_flag = False  # 重置停止标志
     state.status = "connecting"
     state.message = "正在连接中继..."
     # 保存配置到本地文件
@@ -478,13 +479,16 @@ async def api_start(request: Request):
 async def api_stop():
     state._stop_flag = True
     # 不跨事件循环关闭 WebSocket，只设置标志让 agent 线程自行关闭
-    # 等待线程结束（非阻塞方式：最多等 2 秒）
+    # 等待线程结束（非阻塞方式：最多等 3 秒）
     if state._thread and state._thread.is_alive():
-        # 在 executor 中 join，避免阻塞 uvicorn 事件循环
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, state._thread.join, 2)
+        await loop.run_in_executor(None, state._thread.join, 3)
+    # 如果线程仍未退出，强制重置状态（但不重置 _stop_flag，让线程最终自行退出）
+    if state._thread and state._thread.is_alive():
+        logger.warning("[Agent] 线程未在3秒内退出，可能仍在重连等待中")
+    else:
+        state._stop_flag = False
     state._thread = None
-    state._stop_flag = False
     state.status = "idle"
     state.message = "已停止"
     state._ws = None
@@ -778,7 +782,7 @@ async def _agent_async_main():
                             await asyncio.sleep(0.02)
 
                     async def command_loop():
-                        nonlocal streaming_active
+                        nonlocal streaming_active, audio
                         while True:
                             try:
                                 msg = await ws.recv()
@@ -927,9 +931,10 @@ async def _agent_async_main():
                         asyncio.ensure_future(heartbeat_loop()),
                     ]
                     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                    # 取消所有未完成的任务
+                    # 取消所有未完成的任务并等待其结束
                     for t in pending:
                         t.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
                     # 传播第一个完成的任务中的异常
                     for t in done:
                         if t.exception():
@@ -954,6 +959,13 @@ async def _agent_async_main():
                 await asyncio.sleep(1)
             retry_delay = min(retry_delay * 2, 30)
     finally:
+        # 清理音频资源
+        try:
+            if 'audio' in dir() and audio:
+                audio.stop()
+                audio = None
+        except Exception:
+            pass
         state.status = "idle"
         state.message = "已停止"
         state._ws = None

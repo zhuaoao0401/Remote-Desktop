@@ -148,10 +148,9 @@ async def status():
 @app.websocket("/ws/agent")
 async def agent_endpoint(ws: WebSocket):
     import time
-    import urllib.parse
     token = ws.query_params.get("token")
-    desktop_id = urllib.parse.unquote(ws.query_params.get("desktop_id", "default"))
-    hostname = urllib.parse.unquote(ws.query_params.get("hostname", desktop_id))
+    desktop_id = ws.query_params.get("desktop_id", "default")
+    hostname = ws.query_params.get("hostname", desktop_id)
     if token != config.AGENT_TOKEN:
         await ws.close(code=4001, reason="无效的代理令牌")
         return

@@ -59,6 +59,8 @@
     ws.onopen = () => {
       connected = true;
       reconnectDelay = 2000; // 重连成功，重置指数退避
+      latencyHistory = [];   // 清空延迟统计
+      pingLatency = 0;
       setStatus('已连接', 'connected');
       overlay.classList.add('hidden');
       // 启动 ping
@@ -357,7 +359,7 @@
       sendCmd({ type: 'mouse_down', x: touchState.lastX, y: touchState.lastY, button: 'left' });
       sendCmd({ type: 'mouse_up', x: touchState.lastX, y: touchState.lastY, button: 'left' });
     } else if (touchState.mode === 'move') {
-      sendCmd({ type: 'mouse_up', button: 'left' });
+      sendCmd({ type: 'mouse_up', x: touchState.lastX, y: touchState.lastY, button: 'left' });
     }
     touchState.mode = 'none';
   }, { passive: false });

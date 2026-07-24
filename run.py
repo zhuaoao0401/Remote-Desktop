@@ -21,6 +21,7 @@ import subprocess
 import importlib
 import threading
 import time
+import asyncio
 import webbrowser
 import argparse
 
@@ -133,8 +134,10 @@ def start_services(port=8799, open_browser=True):
         if token:
             state.token = token
         state.desktop_id = hostname
+        state._stop_flag = False  # 重置停止标志
         state.status = "connecting"
         state.message = "正在连接中继..."
+        state.save_config()
 
         import threading as _t
         state._thread = _t.Thread(target=run_agent_thread, daemon=True)
@@ -144,15 +147,15 @@ def start_services(port=8799, open_browser=True):
     @server_app.post("/api/stop")
     async def api_stop():
         state._stop_flag = True
-        if state._ws:
-            try:
-                await state._ws.close()
-            except Exception:
-                pass
+        # 不跨事件循环关闭 WebSocket，只设置标志让 agent 线程自行关闭
         if state._thread and state._thread.is_alive():
-            state._thread.join(timeout=3)
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, state._thread.join, 3)
+        if state._thread and state._thread.is_alive():
+            print("[Agent] 线程未在3秒内退出，可能仍在重连等待中")
+        else:
+            state._stop_flag = False
         state._thread = None
-        state._stop_flag = False
         state.status = "idle"
         state.message = "已停止"
         state._ws = None
