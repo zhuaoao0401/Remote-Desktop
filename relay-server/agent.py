@@ -29,6 +29,9 @@ import websockets
 
 from core import DeltaScreenCapture, InputController, pack_delta_frame, AudioCapture
 import config
+import logging
+
+logger = logging.getLogger("agent")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -675,7 +678,7 @@ def run_agent_thread():
     try:
         loop.run_until_complete(_agent_async_main())
     except Exception as e:
-        print(f"[Agent线程异常] {e}")
+        logger.info(f"[Agent线程异常] {e}")
     finally:
         loop.close()
 
@@ -693,9 +696,13 @@ async def _agent_async_main():
         did = urllib.parse.quote(state.desktop_id, safe='')
         url = f"{state.relay_url}/ws/agent?token={state.token}&desktop_id={did}&hostname={urllib.parse.quote(state.hostname, safe='')}"
 
+        logger.info(f"[Agent] 启动 主机={state.hostname} 中继={state.relay_url} 代理={state.proxy or '直连'}")
+        logger.info(f"[Agent] 连接URL: {url}")
+
         retry_delay = 2
         while True:
             if state._stop_flag:
+                print("[Agent] 收到停止信号，退出")
                 break
             try:
                 state.status = "connecting"
@@ -704,17 +711,20 @@ async def _agent_async_main():
                 ws_kwargs = dict(max_size=None, ping_interval=20, open_timeout=15)
                 if state.proxy:
                     ws_kwargs["proxy"] = state.proxy
+                    logger.info(f"[Agent] 通过代理连接: {state.proxy}")
+                logger.info(f"[Agent] 正在连接中继服务器...")
                 async with websockets.connect(url, **ws_kwargs) as ws:
                     state._ws = ws
                     state.status = "connected"
                     retry_delay = 2
                     state.message = "已连接，等待控制端接入"
                     state.last_connected = time.strftime("%Y-%m-%d %H:%M:%S")
-                    print(f"[已连接] 主机={state.hostname} 中继={state.relay_url}")
+                    logger.info(f"[Agent] 已连接 主机={state.hostname} 中继={state.relay_url}")
 
                     w, h = screen.get_size()
                     monitors = screen.get_monitors()
                     audio_cap = AudioCapture.is_available()
+                    logger.info(f"[Agent] 屏幕分辨率={w}x{h} 显示器数={len(monitors)} 音频={audio_cap}")
                     await ws.send(json.dumps({
                         "type": "init", "width": w, "height": h,
                         "fps": config.SCREEN_FPS, "encoding": "delta",
@@ -724,6 +734,7 @@ async def _agent_async_main():
                         "audio_supported": audio_cap,
                         "audio_rate": 22050,
                     }))
+                    print("[Agent] init 消息已发送")
 
                     loop = asyncio.get_event_loop()
 
@@ -793,7 +804,7 @@ async def _agent_async_main():
                                     if file_recv["received"] >= file_recv["size"]:
                                         file_recv["fp"].close()
                                         save_path = file_recv.get("path", "")
-                                        print(f"[文件接收完成] {file_recv['name']} → {save_path}")
+                                        logger.info(f"[Agent] 文件接收完成: {file_recv['name']} → {save_path} ({file_recv['size']} bytes)")
                                         await ws.send(json.dumps({
                                             "type": "file_done",
                                             "name": file_recv["name"],
@@ -820,12 +831,12 @@ async def _agent_async_main():
                                             try:
                                                 audio = AudioCapture()
                                                 audio.start()
-                                                print(f"[音频] 已开始采集系统声音")
+                                                logger.info(f"[Agent] 音频采集已启动")
                                             except Exception as e:
-                                                print(f"[音频] 采集失败: {e}")
+                                                logger.info(f"[Agent] 音频采集失败: {e}")
                                                 audio = None
                                         state.message = "已连接，正在传输画面"
-                                        print(f"[开始传输] 控制端已接入")
+                                        logger.info(f"[Agent] 控制端已接入，开始传输画面")
                                     continue
                                 elif cmd_type == "stop_streaming":
                                     if streaming_active:
@@ -835,7 +846,7 @@ async def _agent_async_main():
                                             audio.stop()
                                             audio = None
                                         state.message = "已连接，等待控制端接入"
-                                        print(f"[停止传输] 控制端已断开")
+                                        logger.info(f"[Agent] 控制端断开，停止传输画面")
                                     continue
                                 elif cmd_type == "switch_monitor":
                                     idx = cmd.get("index", 1)
@@ -872,7 +883,7 @@ async def _agent_async_main():
                                     if offset > 0 and os.path.exists(save_path) and os.path.getsize(save_path) >= offset:
                                         file_recv["fp"] = open(save_path, "ab")
                                         file_recv["received"] = offset
-                                        print(f"[文件续传] {fname} 从 {offset} 字节继续")
+                                        logger.info(f"[Agent] 文件续传: {fname} 从 {offset} 字节继续")
                                     else:
                                         # 避免重名
                                         base, ext = os.path.splitext(fname)
@@ -885,7 +896,7 @@ async def _agent_async_main():
                                     file_recv["name"] = os.path.basename(save_path)
                                     file_recv["size"] = fsize
                                     file_recv["path"] = save_path
-                                    print(f"[文件接收开始] {fname} ({fsize} bytes) → {save_path}")
+                                    logger.info(f"[Agent] 文件接收开始: {fname} ({fsize} bytes) → {save_path}")
                                     continue
                                 elif cmd_type == "file_cancel":
                                     if file_recv["fp"]:
@@ -897,7 +908,7 @@ async def _agent_async_main():
                                 # 普通输入命令
                                 await loop.run_in_executor(None, inp.execute, cmd)
                             except Exception as e:
-                                print(f"[命令错误] {e}")
+                                logger.info(f"[Agent] 命令执行错误: {e}  cmd_type={cmd_type if 'cmd_type' in locals() else '?'}")
 
                     async def heartbeat_loop():
                         """定时发送心跳，防止连接超时断开。"""
@@ -915,11 +926,13 @@ async def _agent_async_main():
                     ConnectionRefusedError, OSError) as e:
                 state.status = "connecting"
                 state.message = f"连接断开，{retry_delay}秒后重连: {e}"
-                print(f"[连接断开] {e}  {retry_delay}秒后重连...")
+                logger.info(f"[Agent] 连接断开: {e}  {retry_delay}秒后重连...")
             except Exception as e:
                 state.status = "connecting"
                 state.message = f"异常，{retry_delay}秒后重连: {e}"
-                print(f"[异常] {e}  {retry_delay}秒后重连...")
+                import traceback
+                logger.info(f"[Agent] 异常: {e}  {retry_delay}秒后重连...")
+                logger.exception("exception")
             # 指数退避等待重连
             for _ in range(retry_delay):
                 if state._stop_flag:
